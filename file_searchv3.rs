@@ -98,8 +98,18 @@ fn search_files(dir: &Path, search_string: &str, results: &mut Vec<String>) {
                     // Recursive call
                     search_files(&path, search_string, results);
                 } else if let Some(file_name) = path.file_name() {
-                    if file_name.to_string_lossy().contains(search_string) {
-                        results.push(format!("Found: {:?}", path));
+                    let file_name_str = file_name.to_string_lossy();
+                    if search_string.starts_with("*.") {
+                        // If the search string starts with "*.", search by file extension
+                        let ext = &search_string[2..];
+                        if path.extension().map_or(false, |e| e == ext) {
+                            results.push(format!("Found: {:?}", path));
+                        }
+                    } else {
+                        // Otherwise, search by substring
+                        if file_name_str.contains(search_string) {
+                            results.push(format!("Found: {:?}", path));
+                        }
                     }
                 }
             }
