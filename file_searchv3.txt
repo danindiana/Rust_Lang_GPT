@@ -1,0 +1,11 @@
+The program is designed to search for files containing the search string in their names, but it doesn't support wildcard characters like *. If you enter *.pdf, it will look for files that literally have *.pdf in their names, rather than all files with the .pdf extension.
+
+To search for all files with a specific extension, like .pdf, you can modify the search_files function to check if the file extension matches the search string.
+
+Here is the modified search_files function that supports searching by file extension:
+
+This modified search_files function supports two kinds of search strings:
+
+If the search string starts with *. followed by an extension (e.g. *.pdf), it will search for files with that extension.
+Otherwise, it will search for files containing the search string in their names.
+With this modification, you should be able to search for .pdf files by entering *.pdf as the search string. Also, please make sure you enter valid directory paths to search within, and type 'done' when you have finished entering directories.
