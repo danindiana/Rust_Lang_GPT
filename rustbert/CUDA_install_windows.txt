@@ -1,0 +1,45 @@
+Trying to install CUDA, pytorch, etc. on windows 10 and get this message:  The script pip3.10.exe is installed in 'C:\Program Files (x86)\Microsoft Visual Studio\Shared\Python37_64\Scripts' which is not on PATH.
+  Consider adding this directory to PATH or, if you prefer to suppress this warning, use --no-warn-script-location.
+  The script wheel.exe is installed in 'C:\Program Files (x86)\Microsoft Visual Studio\Shared\Python37_64\Scripts' which is not on PATH.
+  Consider adding this directory to PATH or, if you prefer to suppress this warning, use --no-warn-script-location.
+
+What should I do to add the directory to PATH?
+
+The warning message you're getting means that the system can't find the directory 'C:\Program Files (x86)\Microsoft Visual Studio\Shared\Python37_64\Scripts' in your PATH environment variable. The PATH environment variable is a system variable that your operating system uses to locate needed executables from the command line or Terminal window.
+
+To add the directory to PATH on Windows 10, you can follow these steps:
+
+1. Search for 'Environment Variables' in the Windows search bar and select 'Edit the system environment variables'.
+2. In the System Properties window that pops up, click on the 'Environment Variables' button.
+3. In the Environment Variables window, under the 'System variables' section, find and select the 'Path' variable, then click on 'Edit'.
+4. In the Edit Environment Variable window, click on 'New' and then paste the directory 'C:\Program Files (x86)\Microsoft Visual Studio\Shared\Python37_64\Scripts'.
+5. Click 'OK' on all windows to close them.
+
+After following these steps, the directory should be added to your PATH, and your system should be able to find the pip3.10.exe and wheel.exe scripts.
+
+You need to restart any open command line or PowerShell windows for the changes to take effect. You can check whether the directory was added successfully by opening a new command line window and typing `echo %PATH%`. The directory you added should appear in the list.
+
+I get the following error when attempting to run: py -m pip install nvidia-pyindex
+
+
+ RuntimeError: C:\Program Files (x86)\Microsoft Visual Studio\Shared\Python37_64\python.exe: can't open file 'Files': [Errno 2] No such file or directory
+
+      [end of output]
+
+  note: This error originates from a subprocess, and is likely not a problem with pip.
+  ERROR: Failed building wheel for nvidia-pyindex
+  Running setup.py clean for nvidia-pyindex
+Failed to build nvidia-pyindex
+ERROR: Could not build wheels for nvidia-pyindex, which is required to install pyproject.toml-based projects
+
+The issue here seems to be that the Python executable path has spaces, i.e., 'C:\Program Files (x86)\Microsoft Visual Studio\Shared\Python37_64\python.exe'. This might cause problems when running commands, as it interprets each space-separated part as a separate argument. In this case, it is trying to open a file named 'Files', which does not exist.
+
+Here are a few options you might consider to solve this problem:
+
+1. **Install Python in a directory without spaces:** You can reinstall Python in a directory path without spaces, for example, 'C:\Python37', and then add this new path to the system PATH as explained in the previous response. Make sure you uninstall the existing Python before reinstalling to avoid conflicts.
+
+2. **Use short path notation:** Windows supports a short path notation (DOS-compatible) for locations with spaces in their names. For instance, 'C:\Program Files (x86)\Microsoft Visual Studio\Shared\Python37_64' might be referenced as 'C:\Progra~2\Micros~1\Shared\Python37_64' or similar. You can find out the correct short path using the command `dir /X` in the Command Prompt at the root directory.
+
+3. **Use quotes when executing commands with paths:** If the path is given as a command-line argument, you can also use quotes to make sure the entire path is interpreted as a single argument. For example, you can try running `"C:\Program Files (x86)\Microsoft Visual Studio\Shared\Python37_64\python.exe" -m pip install nvidia-pyindex`.
+
+Please try these potential solutions and see if any of them resolve your issue.
