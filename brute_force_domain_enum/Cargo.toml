@@ -1,0 +1,11 @@
+[package]
+name = "dcrawl"
+version = "0.1.0"
+authors = ["Ghazghkull Mag Uruk Thraka · Goffs, Most infamous Ork Warboss of M41"]
+edition = "2018"
+
+[dependencies]
+reqwest = "0.11"
+scraper = "0.12"
+tokio = { version = "1", features = ["full"] }
+url = "2.2"
