@@ -1,0 +1,2236 @@
+That last code worked great! Let's try to refactor the next code iteration by implementing parallel operations when crawling websites using Rayon crate.
+
+The use of parallelism in a web crawler could certainly improve its performance by allowing it to crawl multiple web pages at the same time. However, the integration of parallelism into an async context like this is not straightforward.
+
+The Rayon crate in Rust is designed to provide a way to run CPU-bound tasks in parallel. However, asynchronous I/O, like the reqwest crate uses, is not CPU-bound and so it doesn't play well with Rayon. The main problem is that Rayon is based on creating a thread pool and it blocks the threads to run parallel tasks, whereas async code relies on not blocking threads.
+
+However, for the sake of example, let's assume that get_links function is a CPU-bound task and try to run it in parallel.
+
+We can do this by collecting all the URLs first, and then processing them in parallel. Note that this would increase the memory consumption of the application, because all URLs would need to be kept in memory:
+
+use rayon::prelude::*;
+use futures::stream::FuturesUnordered;
+use futures::StreamExt;
+// ... rest of the imports ...
+
+#[tokio::main]
+async fn main() -> std::io::Result<()> {
+    // ... setup code ...
+
+    let mut all_links = Vec::new();
+
+    while let Some(url) = url_queue.pop() {
+        // ... same code as before ...
+
+        if let Some(hostname) = get_hostname(&url) {
+            let links = match get_links(&url).await {
+                Ok(links) => links,
+                Err(err) => {
+                    println!("Failed to crawl {}: {}", url, err);
+                    continue;
+                }
+            };
+
+            all_links.push(links);
+        }
+    }
+
+    println!("All links gathered, starting parallel processing...");
+
+    all_links.par_iter_mut()
+        .for_each(|links| {
+            let mut hostname_count = 0;
+            let mut link_count = 0;
+
+            for link in links {
+                // ... same code as before ...
+            }
+        });
+
+    println!("dcrawl process completed. You stopped the process.");
+
+    Ok(())
+}
+
+Note: For actual async I/O tasks, you'd use an async runtime's parallel processing capabilities, such as tokio's spawn function. In fact, the reqwest crate is based on tokio.
+
+You could convert your tasks to be async and use tokio::spawn to run them in parallel. This would keep the number of actual threads low, while potentially having thousands of tasks running in parallel.
+
+Please note that it's just a conceptual example. If you want to get the maximum performance for your web crawler, it's recommended to use tokio's async task spawning for real async I/O-bound tasks, and potentially Rayon for actual CPU-bound tasks. Always remember that different tools are designed for different tasks.
+
+Let's see what  converting tasks to be async and use tokio::spawn to run them in parallel looks like. Want to give it a go?  
+
+Certainly! Using tokio::spawn can allow the crawler to process multiple URLs concurrently. In the following implementation, the crawl function is modified to be an asynchronous function that returns a Vec<String> (the links found on the page), and we spawn this function for each URL in the queue:
+
+use tokio::sync::mpsc;
+// ... other imports ...
+
+async fn main() -> std::io::Result<()> {
+    // ... setup code ...
+
+    let mut all_links = FuturesUnordered::new();
+    let (tx, mut rx) = mpsc::channel::<Vec<String>>(100);
+
+    while let Some(url) = url_queue.pop() {
+        if !running.load(Ordering::SeqCst) {
+            break;
+        }
+
+        let url_clone = url.clone();
+        let tx_clone = tx.clone();
+        tokio::spawn(async move {
+            if let Some(links) = crawl(&url_clone).await {
+                tx_clone.send(links).await.unwrap();
+            }
+        });
+    }
+
+    drop(tx);  // Close the channel
+
+    while let Some(links) = rx.recv().await {
+        all_links.push(links);
+    }
+
+    // ... finish processing ...
+
+    Ok(())
+}
+
+async fn crawl(url: &str) -> Option<Vec<String>> {
+    println!("Crawling: {}", url);
+
+    if let Some(hostname) = get_hostname(&url) {
+        match get_links(&url).await {
+            Ok(links) => Some(links),
+            Err(err) => {
+                println!("Failed to crawl {}: {}", url, err);
+                None
+            }
+        }
+    } else {
+        None
+    }
+}
+
+// ... rest of the code ...
+
+In this version, the main task spawns new tasks for each URL in the queue and sends their results to a channel when they are finished. The main task then collects all these results and processes them. This allows the URLs to be processed concurrently, which should increase the speed of the crawler. Remember that spawning too many tasks at once can exhaust resources, so you might want to limit the number of concurrent tasks.
+
+
+Refactor the following code by Using tokio::spawn can allow the crawler to process multiple URLs concurrently. 
+
+In order to modify the code to use tokio::spawn for concurrent operations, we'll need to adapt the main loop where URLs are being processed. We'll create a new task for each URL, and use a channel to send the results back to the main task. To avoid overloading the system with too many simultaneous tasks, we'll introduce some backpressure mechanism using tokio::sync::Semaphore.
+
+Here is how the revised code would look:
+
+use tokio::sync::{mpsc, Semaphore};
+use futures::stream::StreamExt;
+use futures::future::join_all;
+//... other imports ...
+
+#[tokio::main]
+async fn main() -> std::io::Result<()> {
+    // ... setup code ...
+
+    // semaphore to limit concurrent tasks
+    let semaphore = Arc::new(Semaphore::new(50));
+    let mut handles = Vec::new();
+    let (tx, mut rx) = mpsc::channel::<String>(100);
+
+    for url in url_queue {
+        if !running.load(Ordering::SeqCst) {
+            break;
+        }
+
+        if crawled_urls.contains(&url) {
+            continue;
+        }
+
+        // create new permit for each task
+        let permit = semaphore.clone().acquire_owned().await.unwrap();
+        let url_clone = url.clone();
+        let tx_clone = tx.clone();
+
+        crawled_urls.insert(url.clone());
+
+        let handle = tokio::spawn(async move {
+            permit.forget();  // forget permit immediately to free it
+
+            if let Some(links) = crawl(&url_clone).await {
+                for link in links {
+                    tx_clone.send(link).await.unwrap();
+                }
+            }
+        });
+
+        handles.push(handle);
+    }
+
+    drop(tx); // Close the channel
+
+    // wait for all tasks to complete
+    join_all(handles).await;
+
+    while let Some(url) = rx.recv().await {
+        writeln!(writer, "{}", url)?; // write to file
+    }
+
+    println!("dcrawl process completed. You stopped the process.");
+
+    Ok(())
+}
+
+async fn crawl(url: &str) -> Option<Vec<String>> {
+    println!("Crawling: {}", url);
+
+    if let Some(hostname) = get_hostname(&url) {
+        match get_links(&url).await {
+            Ok(links) => Some(links),
+            Err(err) => {
+                println!("Failed to crawl {}: {}", url, err);
+                None
+            }
+        }
+    } else {
+        None
+    }
+}
+
+// ... rest of the code ...
+
+In the revised code, we use a Semaphore to limit the number of concurrent tasks. Each time we spawn a task, we acquire a permit from the semaphore. If the semaphore is out of permits, acquire_owned().await will pause until a permit becomes available. This provides backpressure to prevent an unlimited number of tasks from running concurrently.
+
+We also use join_all() to ensure that we wait for all spawned tasks to finish before closing the main function. This makes sure that we don't drop any tasks prematurely. We also use FuturesUnordered to efficiently manage a set of tasks.
+
+OK. Amazingly that appears to compile however when running the program the program just sits on the website given by the user to crawl and doesn't write anything to the output file. When I quit the program I got this msg: error: process didn't exit successfully: `target\debug\snagrodBFDNE.exe` (exit code: 0xc000013a, STATUS_CONTROL_C_EXIT)error: process didn't exit successfully: `target\debug\snagrodBFDNE.exe` (exit code: 0xc000013a, STATUS_CONTROL_C_EXIT)
+
+It looks like the program is either blocked or not proceeding as expected. However, diagnosing the problem without seeing the code is tricky. It could be due to an issue with how URLs are processed, or there might be something wrong with the crawling logic.
+
+Here are a few debugging steps you could take:
+
+Add print statements in key parts of the code to trace the program's execution. For instance, print a message whenever a URL is fetched, when it's written to a file, or when an error occurs. This could help identify where the program is getting stuck.
+
+Make sure that the user-given URL is correctly parsed and accessible. You could start the program with a hard-coded URL to a simple website to check if the problem lies with the input or elsewhere.
+
+Check the handling of asynchronous tasks. Are the spawned tasks correctly awaited? Could there be an issue with too many tasks being created and the program being unable to handle them?
+
+Ensure proper error handling. If an error occurs during the crawling or writing process, is it correctly propagated and logged?
+
+If the website is large, the program might just be taking a long time to crawl it. Consider limiting the depth or breadth of the crawl for debugging purposes.
+
+Remember, concurrency and web crawling can be complex tasks, and it's normal to encounter obstacles. Use the compiler's feedback and incremental debugging to help you understand what's happening.
+
+The exit code: 0xc000013a, STATUS_CONTROL_C_EXIT message is from the operating system and indicates that the program was closed by the user (you). It doesn't necessarily indicate an error in the program.
+
+Your current logic will only spawn the tasks for the initial URLs, after which no further URLs are added to the queue for crawling. Essentially, you have a one-level depth crawler right now, which means it will only crawl the initial page (or pages) and then stop.
+
+One way to fix this issue is by using a while loop to keep reading new URLs from the receiver channel and add new tasks for each new URL received.
+
+Below is a modified version of your main function, which uses a while loop to keep reading from the receiver channel until the sender channel is dropped and no more URLs are in the queue.
+
+OK. Having made that modification to the code I can confirm it streams the links from the website to crawl however two issues: 1.) It's not writing the links it crawls to the output file the user specifies. 2.) It appears to hang on 'Skipping non-HTML content: application/zip'.
+
+Apologies for the confusion. As we've shifted to an asynchronous process, the writing process should also be done asynchronously and in real-time as we receive the URLs.
+
+Regarding the "Skipping non-HTML content: application/zip", this is expected behavior because we are only processing "text/html" Content-Type. We can improve the code to skip non-HTML content and continue to the next task instead of hanging.
+
+Here's an updated version of your code:
+
+The changes I've made are as follows:
+
+Added a new asynchronous task that continually listens for new URLs from the channel and writes them to the file as they come.
+
+Removed the unnecessary call to writeln! in the main function.
+
+I also added writer_handle.await.unwrap(); to ensure that the writing process is finished before the main function exits.
+
+If the content type is not "text/html", it should now properly skip it and continue with the next task instead of hanging.
+
+The changes I've made are as follows:
+
+Changed let mut writer = BufWriter::new(file); to let writer = BufWriter::new(file);
+Removed the unused hostname variable in the crawl function.
+Removed the second usage of rx.recv().await after we've moved rx into the writer_handle task.
+
+OK. Having made the modification the program runs however it no longer crawls the website but immediately exits: dcrawl process completed. 
+
+Apologies for the confusion earlier. The problem lies in the loop that spawns tasks to crawl the URLs. Currently, it's just looping over the initial url_queue which only contains the starting_url. After that, it stops. This is why the process completes immediately.
+
+What we should do is listen to the rx channel in the main function and add new URLs to the url_queue as they're received. Because rx.recv().await is blocking and we need to keep adding tasks to handles at the same time, we need to use tokio::select! to wait for either a new URL to be received or all tasks to finish.
+
+This is a quite advanced modification of the current code and involves using shared mutable state between tasks, which complicates the program. I'll try to simplify this as much as possible.
+
+Here's the updated code:
+
+This new code introduces std::sync::Mutex to protect the shared url_queue from concurrent access. This queue is now updated whenever a new URL is received.
+
+Please note that while the above code will probably make your application run without immediately exiting, there is no real termination condition here other than the Ctrl-C interrupt. Without additional measures to track active tasks or limit the depth of the crawl, this code will potentially run indefinitely for sites with a lot of reachable links. This is an inherent complexity in web crawling that needs to be addressed depending on your specific requirements.
+
+Ok that new code throws the following errors: error[E0433]: failed to resolve: use of undeclared type `Mutex`
+  --> src\main.rs:25:30
+   |
+25 |     let url_queue = Arc::new(Mutex::new(vec![starting_url.clone()]));
+   |                              ^^^^^ use of undeclared type `Mutex`
+   |
+help: consider importing one of these items
+   |
+1  + use futures::lock::Mutex;
+   |
+1  + use std::sync::Mutex;
+   |
+1  + use tokio::sync::Mutex;
+   |
+
+error[E0425]: cannot find value `starting_url` in this scope
+  --> src\main.rs:25:46
+   |
+25 |     let url_queue = Arc::new(Mutex::new(vec![starting_url.clone()]));
+   |                                              ^^^^^^^^^^^^ not found in this scope
+
+error[E0425]: cannot find value `writer` in this scope
+  --> src\main.rs:30:22
+   |
+30 |             writeln!(writer, "{}", url).unwrap();
+   |                      ^^^^^^ not found in this scope
+
+error[E0425]: cannot find value `running` in this scope
+  --> src\main.rs:36:13
+   |
+36 |         if !running.load(Ordering::SeqCst) {
+   |             ^^^^^^^ not found in this scope
+
+error[E0425]: cannot find value `crawled_urls` in this scope
+  --> src\main.rs:48:12
+   |
+48 |         if crawled_urls.contains(&url) {
+   |            ^^^^^^^^^^^^ not found in this scope
+
+error[E0425]: cannot find value `semaphore` in this scope
+  --> src\main.rs:52:22
+   |
+52 |         let permit = semaphore.clone().acquire_owned().await.unwrap();
+   |                      ^^^^^^^^^ not found in this scope
+
+error[E0425]: cannot find value `crawled_urls` in this scope
+  --> src\main.rs:56:9
+   |
+56 |         crawled_urls.insert(url.clone());
+   |         ^^^^^^^^^^^^ not found in this scope
+
+error[E0425]: cannot find value `handles` in this scope
+  --> src\main.rs:67:9
+   |
+67 |         handles.push(handle);
+   |         ^^^^^^^ help: a local variable with a similar name exists: `handle`
+
+warning: unused import: `BufWriter`
+ --> src\main.rs:6:28
+  |
+6 | use std::io::{self, Write, BufWriter};
+  |                            ^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` on by default
+
+warning: unused import: `AtomicBool`
+ --> src\main.rs:8:25
+  |
+8 | use std::sync::atomic::{AtomicBool, Ordering};
+  |                         ^^^^^^^^^^
+
+warning: unused import: `Semaphore`
+  --> src\main.rs:10:25
+   |
+10 | use tokio::sync::{mpsc, Semaphore};
+   |                         ^^^^^^^^^
+
+warning: unused import: `tokio::signal::ctrl_c`
+  --> src\main.rs:11:5
+   |
+11 | use tokio::signal::ctrl_c;
+   |     ^^^^^^^^^^^^^^^^^^^^^
+
+Some errors have detailed explanations: E0425, E0433.
+For more information about an error, try `rustc --explain E0425`.
+warning: `snagrodBFDNE` (bin "snagrodBFDNE" test) generated 4 warnings
+
+My apologies for the confusion, I made the assumption that you already have some necessary code pieces in place.
+
+Regarding the error messages:
+
+The Mutex needs to be imported. Since we are using tokio, it's better to use tokio::sync::Mutex which is designed for async tasks.
+The variable starting_url should be the starting point of your crawl.
+writer should be the instance of BufWriter where you are writing your results.
+running should be an instance of std::sync::AtomicBool that controls whether the application is still running or not.
+crawled_urls should be a set (HashSet for instance) where you store URLs that have been already crawled.
+semaphore should be an instance of tokio::sync::Semaphore which controls the concurrency level of your crawler.
+handles should be a Vec that stores the handles of your async tasks.
+The warnings you are getting are about unused imports. You can remove these imports from the top of your file.
+
+Please revise your code and add the missing pieces. Feel free to ask if you need help with any of them.
+
+For reference, here's how you might initialize some of these variables:
+
+I apologize for the confusion, output_file_path and max_concurrency are just placeholders. You need to replace them with the path to your output file and your desired maximum concurrency level. If you're accepting these as command line arguments, you might have something like this:
+
+let args: Vec<String> = std::env::args().collect();
+let output_file_path = &args[1]; // assuming this is your second command line argument
+let max_concurrency: usize = args[2].parse().expect("Max concurrency must be a number!"); // assuming this is your third command line argument
+
+As for the Mutex, it appears that you're not importing it from tokio::sync. Please add Mutex to your import statement:
+
+use tokio::sync::{mpsc, Semaphore, Mutex};
+
+With these adjustments, the beginning of your main function might look something like this:
+
+fn main() -> io::Result<()> {
+    let args: Vec<String> = std::env::args().collect();
+    let output_file_path = &args[1]; 
+    let max_concurrency: usize = args[2].parse().expect("Max concurrency must be a number!"); 
+
+    let starting_url = "https://example.com".to_string(); // Change this to your starting URL
+    let file = File::create(output_file_path)?;
+    let writer = Arc::new(Mutex::new(BufWriter::new(file)));
+    let running = Arc::new(AtomicBool::new(true));
+    let crawled_urls = Arc::new(Mutex::new(HashSet::new()));
+    let semaphore = Arc::new(Semaphore::new(max_concurrency));
+    let handles = Vec::new();
+
+    // Now create the channel and the url_queue
+    let (tx, mut rx) = mpsc::channel::<String>(100);
+    let url_queue = Arc::new(Mutex::new(vec![starting_url.clone()]));
+
+    // rest of your code goes here
+}
+
+Here is a corrected version of the given code. The primary issue is that you're trying to directly manipulate shared objects (Arc<Mutex<...>> types). When using Arc<Mutex<...>>, you must first lock the mutex and then handle the result before attempting to read or write to the data it is protecting.
+
+Additionally, the Arc (Atomic Reference Counting) is a thread-safe reference-counting pointer which is necessary when you want shared ownership but it isn't a container by itself. It doesn't directly provide methods for the data it encapsulates (like insert or contains for a HashSet). It only gives thread-safe cloning and destruction.
+
+Here's the corrected version of the code:
+
+use reqwest::header::{HeaderMap, HeaderValue, USER_AGENT};
+use reqwest::Client;
+use scraper::{Html, Selector};
+use url::Url;
+use std::collections::HashSet;
+use std::io::{self, Write, BufWriter};
+use std::fs::File;
+use std::sync::Arc;
+use tokio::sync::{mpsc, Semaphore, Mutex};
+
+const USER_AGENT_STRING: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/99.0.9999.99 Safari/537.36";
+
+#[tokio::main]
+async fn main() -> std::io::Result<()> {
+    let args: Vec<String> = std::env::args().collect();
+    let output_file_path = &args[1];
+    let max_concurrency: usize = args[2].parse().expect("Max concurrency must be a number!");
+
+    let starting_url = "https://example.com".to_string(); // Change this to your starting URL
+    let file = File::create(output_file_path)?;
+    let writer = Arc::new(Mutex::new(BufWriter::new(file)));
+    let crawled_urls = Arc::new(Mutex::new(HashSet::new()));
+    let semaphore = Arc::new(Semaphore::new(max_concurrency));
+    
+    let (tx, mut rx) = mpsc::channel::<String>(100);
+    let url_queue = Arc::new(Mutex::new(vec![starting_url.clone()]));
+    
+    let url_queue_writer = url_queue.clone();
+    let writer_handle = tokio::spawn(async move {
+        while let Some(url) = rx.recv().await {
+            let mut writer_guard = writer.lock().await;
+            writeln!(*writer_guard, "{}", url).unwrap();
+            let mut url_queue_writer_guard = url_queue_writer.lock().await;
+            url_queue_writer_guard.push(url);
+        }
+    });
+
+    while let Some(url) = url_queue.lock().await.pop() {
+        let mut crawled_urls_guard = crawled_urls.lock().await;
+        if crawled_urls_guard.contains(&url) {
+            continue;
+        }
+
+        let permit = semaphore.clone().acquire_owned().await.unwrap();
+        let tx_clone = tx.clone();
+        crawled_urls_guard.insert(url.clone());
+
+        let handle = tokio::spawn(async move {
+            permit.forget();  // forget permit immediately to free it
+            if let Some(links) = crawl(&url).await {
+                for link in links {
+                    tx_clone.send(link).await.unwrap();
+                }
+            }
+        });
+    }
+
+    drop(tx); // Close the channel
+
+    writer_handle.await.unwrap(); // Ensure that the writing process is finished
+
+    Ok(())
+}
+
+// ... Rest of the code ...
+
+Now, when dealing with the Mutex, we always lock it asynchronously (using lock().await) and keep the locked MutexGuard until we've finished writing or reading. Also, there is no need for the running AtomicBool as the loop breaks when the url_queue is empty. Please adapt this to your specific needs if required.
+
+Ok running that produced the following: 
+
+cargo run
+warning: unused variable: `output_file_path`
+  --> src\main.rs:16:9
+   |
+16 |     let output_file_path = &args[1];
+   |         ^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_output_file_path`
+   |
+   = note: `#[warn(unused_variables)]` on by default
+
+warning: unused variable: `handle`
+  --> src\main.rs:48:13
+   |
+48 |         let handle = tokio::spawn(async move {
+   |             ^^^^^^ help: if this is intentional, prefix it with an underscore: `_handle`
+
+warning: function `get_hostname` is never used
+  --> src\main.rs:78:4
+   |
+78 | fn get_hostname(url: &str) -> Option<String> {
+   |    ^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` on by default
+
+warning: function `prompt_user_input` is never used
+   --> src\main.rs:130:4
+    |
+130 | fn prompt_user_input() -> String {
+    |    ^^^^^^^^^^^^^^^^^
+
+warning: function `write_urls_to_file` is never used
+   --> src\main.rs:142:4
+    |
+142 | fn write_urls_to_file(urls: &HashSet<String>, filename: &str) -> std::io::Result<()> {
+    |    ^^^^^^^^^^^^^^^^^^
+
+warning: crate `snagrodBFDNE` should have a snake case name
+  |
+  = help: convert the identifier to snake case: `snagrod_bfdne`
+  = note: `#[warn(non_snake_case)]` on by default
+
+warning: `snagrodBFDNE` (bin "snagrodBFDNE") generated 6 warnings (run `cargo fix --bin "snagrodBFDNE"` to apply 2 suggestions)
+    Finished dev [unoptimized + debuginfo] target(s) in 0.25s
+     Running `target\debug\snagrodBFDNE.exe`
+thread 'main' panicked at 'index out of bounds: the len is 1 but the index is 1', src\main.rs:16:29
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+error: process didn't exit successfully: `target\debug\snagrodBFDNE.exe` (exit code: 101)
+
+The index out of bounds error at line 16 suggests that you're trying to access the second command-line argument (args[1]), but it appears that there is no such argument being passed.
+
+It seems like the program is expecting a filename as an argument when it is run (to output the results), but this argument is not being provided.
+
+To fix this, you need to pass the expected filename as an argument when running the program. For instance, if you want the output to be written to a file called "output.txt", you can run the program as follows:
+
+cargo run output.txt
+
+However, considering the warnings, you're not using the output_file_path and several other variables and functions. I recommend you either use these in your main function or comment them out if they're not needed, to keep your code clean and to avoid unnecessary warnings.
+
+Also, your program has an unused Tokio handle at line 48. This handle would allow you to await the task if needed, but it is not being used currently. If you don't need to do anything with the completed task, you can simply ignore the handle:
+
+tokio::spawn(async move {
+    //...
+});
+
+Lastly, the crate name should follow the snake case convention (i.e., snagrod_bfdne instead of snagrodBFDNE) as suggested by the warning message.
+
+However, these are just suggestions and not the cause of the error you're seeing. The error is likely due to not providing an output filename when running the program. Please, try running your program with the filename as an argument and let me know the result.
+
+What does this mean: let output_file_path = &args[2] ?
+
+The line `let output_file_path = &args[2];` in Rust is trying to retrieve the third command line argument that was provided when running the program and store a reference to it in the variable `output_file_path`.
+
+In Rust, the command line arguments are stored in a vector of strings (Vec<String>) where the first element, `args[0]`, is usually the path of the executable itself. Therefore, `args[1]` would be the first argument provided by the user, `args[2]` the second, and so on.
+
+For example, if you run the program with the command:
+
+```bash
+cargo run arg1 arg2 arg3
+```
+
+Then `args[0]` would be something like `"path_to_your_executable"`, `args[1]` would be `"arg1"`, `args[2]` would be `"arg2"`, and `args[3]` would be `"arg3"`.
+
+So, `let output_file_path = &args[2];` is expecting that you have provided at least two arguments when running the program (not counting the path of the executable). If you haven't provided enough arguments, you'll see an error message about an index being out of bounds, like the one you received earlier.
+
+OK. The let output_file_path = &args[2] ? is not working well. Can we just prompt the user to enter the name of the output file and then prompt them again for the website to crawl? 
+
+Sure, we can definitely do that! You will have to change your `main` function to call `prompt_user_input` twice. First, to get the filename for the output file and then to get the URL of the website to crawl. Here's how you could do that:
+
+```rust
+#[tokio::main]
+async fn main() {
+    println!("Please enter the filename for the output file:");
+    let output_file_path = prompt_user_input();
+
+    println!("Please enter the URL of the website to crawl:");
+    let url = prompt_user_input();
+
+    match get_links(&url).await {
+        Ok(urls) => {
+            if let Err(e) = write_urls_to_file(&urls, &output_file_path) {
+                eprintln!("Couldn't write to file: {}", e);
+            }
+        }
+        Err(e) => eprintln!("Error: {}", e),
+    };
+}
+
+fn prompt_user_input() -> String {
+    let mut input = String::new();
+    std::io::stdin().read_line(&mut input).expect("Failed to read line");
+    input.trim().to_string()  // trim removes any trailing newline
+}
+```
+
+In this code, `prompt_user_input` is a function that reads a line from standard input (the console) and returns it as a String. The `main` function calls this twice, once for each of the two pieces of information it needs from the user. The `println!` statements are there to guide the user on what they should enter.
+
+Please implement the desired changes to wit: change main function to call prompt_user_input twice. First, to get the filename for the output file and then to get the URL of the website to crawl. Produce the desired code in it's entirety. Here is the current code we are working with for reference: 
+
+use reqwest::header::{HeaderMap, HeaderValue, USER_AGENT};
+use reqwest::Client;
+use scraper::{Html, Selector};
+use url::Url;
+use std::collections::HashSet;
+use std::io::{self, Write, BufWriter};
+use std::fs::File;
+use std::sync::Arc;
+use tokio::sync::{mpsc, Semaphore, Mutex};
+
+const USER_AGENT_STRING: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/99.0.9999.99 Safari/537.36";
+
+#[tokio::main]
+async fn main() -> std::io::Result<()> {
+    let args: Vec<String> = std::env::args().collect();
+    let output_file_path = &args[2];
+    let max_concurrency: usize = args[12].parse().expect("Max concurrency must be a number!");
+
+    let starting_url = "https://cteh.com/".to_string(); // Change this to your starting URL
+    let file = File::create(output_file_path)?;
+    let writer = Arc::new(Mutex::new(BufWriter::new(file)));
+    let crawled_urls = Arc::new(Mutex::new(HashSet::new()));
+    let semaphore = Arc::new(Semaphore::new(max_concurrency));
+    
+    let (tx, mut rx) = mpsc::channel::<String>(100);
+    let url_queue = Arc::new(Mutex::new(vec![starting_url.clone()]));
+    
+    let url_queue_writer = url_queue.clone();
+    let writer_handle = tokio::spawn(async move {
+        while let Some(url) = rx.recv().await {
+            let mut writer_guard = writer.lock().await;
+            writeln!(*writer_guard, "{}", url).unwrap();
+            let mut url_queue_writer_guard = url_queue_writer.lock().await;
+            url_queue_writer_guard.push(url);
+        }
+    });
+
+    while let Some(url) = url_queue.lock().await.pop() {
+        let mut crawled_urls_guard = crawled_urls.lock().await;
+        if crawled_urls_guard.contains(&url) {
+            continue;
+        }
+
+        let permit = semaphore.clone().acquire_owned().await.unwrap();
+        let tx_clone = tx.clone();
+        crawled_urls_guard.insert(url.clone());
+
+        let handle = tokio::spawn(async move {
+            permit.forget();  // forget permit immediately to free it
+            if let Some(links) = crawl(&url).await {
+                for link in links {
+                    tx_clone.send(link).await.unwrap();
+                }
+            }
+        });
+    }
+
+    drop(tx); // Close the channel
+
+    writer_handle.await.unwrap(); // Ensure that the writing process is finished
+
+    Ok(())
+}
+
+
+async fn crawl(url: &str) -> Option<Vec<String>> {
+    println!("Crawling: {}", url);
+
+    match get_links(&url).await {
+        Ok(links) => Some(links),
+        Err(err) => {
+            println!("Failed to crawl {}: {}", url, err);
+            None
+        }
+    }
+}
+
+fn get_hostname(url: &str) -> Option<String> {
+    match Url::parse(url) {
+        Ok(parsed_url) => parsed_url.host_str().map(|s| s.to_owned()),
+        Err(_) => {
+            println!("Failed to parse URL: {}", url);
+            None
+        }
+    }
+}
+
+fn resolve_absolute_url(base_url: &str, relative_url: &str) -> String {
+    if let Ok(base) = Url::parse(base_url) {
+        if let Ok(absolute) = base.join(relative_url) {
+            return absolute.to_string();
+        }
+    }
+    relative_url.to_string()
+}
+
+async fn get_links(url: &str) -> Result<Vec<String>, reqwest::Error> {
+    let client = Client::builder()
+        .default_headers(default_headers())
+        .build()?;
+
+    let response = client.get(url).send().await?;
+    let content_type = response.headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|ct| ct.to_str().ok());
+
+    if let Some(content_type) = content_type {
+        if content_type.starts_with("text/html") {
+            let body = response.text().await?;
+            let document = Html::parse_document(&body);
+            let selector = Selector::parse("a").unwrap();
+
+            let links: Vec<String> = document
+                .select(&selector)
+                .filter_map(|n| n.value().attr("href"))
+                .map(|link| resolve_absolute_url(url, link))
+                .collect();
+
+            Ok(links)
+        } else {
+            println!("Skipping non-HTML content: {}", content_type);
+            Ok(vec![])
+        }
+    } else {
+        println!("No Content-Type header found");
+        Ok(vec![])
+    }
+}
+
+fn prompt_user_input() -> String {
+    let mut input = String::new();
+    io::stdin().read_line(&mut input).unwrap();
+    input.trim().to_string()
+}
+
+fn default_headers() -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    headers.insert(USER_AGENT, HeaderValue::from_static(USER_AGENT_STRING));
+    headers
+}
+
+fn write_urls_to_file(urls: &HashSet<String>, filename: &str) -> std::io::Result<()> {
+    let mut file = File::create(filename)?;
+    for url in urls {
+        writeln!(file, "{}", url)?;
+    }
+    Ok(())
+}
+
+OK running that code the program just drops back to the command line. It doesn't appear to be doing any crawling. 
+
+Hmm, the issue may be with the `while let Some(url) = url_queue.lock().await.pop()` line. The code is popping a URL off the queue, but if the crawler is faster than the website's server (which is usually the case), it might pop off all the URLs before the crawler has a chance to add more to it.
+
+To fix this, the code needs to use the channel as a queue for URLs instead of a separate URL queue. In this way, the crawler will keep receiving URLs until the channel is closed, and the channel will be closed only when the crawler is completely done.
+
+Let's modify your code as follows:
+
+```rust
+use reqwest::header::{HeaderMap, HeaderValue, USER_AGENT};
+use reqwest::Client;
+use scraper::{Html, Selector};
+use url::Url;
+use std::collections::HashSet;
+use std::io::{self, Write, BufWriter};
+use std::fs::File;
+use std::sync::Arc;
+use tokio::sync::{mpsc, Semaphore, Mutex};
+
+const USER_AGENT_STRING: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/99.0.9999.99 Safari/537.36";
+
+#[tokio::main]
+async fn main() -> std::io::Result<()> {
+    println!("Please enter the filename for the output file:");
+    let output_file_path = prompt_user_input();
+
+    println!("Please enter the URL of the website to crawl:");
+    let starting_url = prompt_user_input();
+
+    let max_concurrency: usize = 5; // Change this to your desired level of concurrency
+
+    let file = File::create(&output_file_path)?;
+    let writer = Arc::new(Mutex::new(BufWriter::new(file)));
+    let crawled_urls = Arc::new(Mutex::new(HashSet::new()));
+    let semaphore = Arc::new(Semaphore::new(max_concurrency));
+
+    let (tx, mut rx) = mpsc::channel::<String>(100);
+    tx.send(starting_url).await.unwrap();
+
+    let writer_handle = tokio::spawn(async move {
+        while let Some(url) = rx.recv().await {
+            let mut writer_guard = writer.lock().await;
+            writeln!(*writer_guard, "{}", url).unwrap();
+        }
+    });
+
+    while let Some(url) = rx.recv().await {
+        let mut crawled_urls_guard = crawled_urls.lock().await;
+        if crawled_urls_guard.contains(&url) {
+            continue;
+        }
+
+        let permit = semaphore.clone().acquire_owned().await.unwrap();
+        let tx_clone = tx.clone();
+        crawled_urls_guard.insert(url.clone());
+
+        let handle = tokio::spawn(async move {
+            permit.forget();  // forget permit immediately to free it
+            if let Some(links) = crawl(&url).await {
+                for link in links {
+                    tx_clone.send(link).await.unwrap();
+                }
+            }
+        });
+    }
+
+    writer_handle.await.unwrap(); // Ensure that the writing process is finished
+
+    Ok(())
+}
+
+async fn crawl(url: &str) -> Option<Vec<String>> {
+    println!("Crawling: {}", url);
+
+    match get_links(&url).await {
+        Ok(links) => Some(links),
+        Err(err) => {
+            println!("Failed to crawl {}: {}", url, err);
+            None
+        }
+    }
+}
+
+fn get_hostname(url: &str) -> Option<String> {
+    match Url::parse(url) {
+        Ok(parsed_url) => parsed_url.host_str().map(|s| s.to_owned()),
+        Err(_) => {
+            println!("Failed to parse URL: {}", url);
+            None
+        }
+    }
+}
+
+fn resolve_absolute_url(base_url: &str, relative_url: &str) -> String {
+    if let Ok(base) = Url::parse(base_url) {
+        if let Ok(absolute) = base.join(relative_url) {
+            return absolute.to_string();
+        }
+    }
+    relative_url.to_string()
+}
+
+async fn get_links(url: &str) -> Result<Vec<String>, reqwest::Error> {
+    let client = Client::builder()
+        .default_headers(default_headers())
+        .build()?;
+
+    let response = client.get(url).send().await?;
+    let content_type = response.headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|ct| ct.to_str().ok());
+
+    if let Some(content_type) = content_type {
+        if content_type.starts_with("text/html") {
+            let body = response.text().await?;
+            let document = Html::parse_document(&body);
+            let selector = Selector::parse("a").unwrap();
+
+            let links: Vec<String> = document
+                .select(&selector)
+                .filter_map(|n| n.value().attr("href"))
+                .map(|link| resolve_absolute_url(url, link))
+                .collect();
+
+            Ok(links)
+        } else {
+            println!("Skipping non-HTML content: {}", content_type);
+            Ok(vec![])
+        }
+    } else {
+        println!("No Content-Type header found");
+        Ok(vec![])
+    }
+}
+
+fn prompt_user_input() -> String {
+    let mut input = String::new();
+    io::stdin().read_line(&mut input).unwrap();
+    input.trim().to_string()
+}
+
+fn default_headers() -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    headers.insert(USER_AGENT, HeaderValue::from_static(USER_AGENT_STRING));
+    headers
+}
+```
+
+This should work as expected, but keep in mind that there's still a possibility for the program to finish before all URLs have been crawled. The crawling process runs asynchronously and can be slower than the main program that pops URLs off the queue and writes them to the file. To fully resolve this, you'd need a more complex design that ensures the main program waits for the crawling process to finish before moving on.
+
+Ok that code throws the following errors: 
+
+warning: unused variable: `handle`
+  --> src\main.rs:48:13
+48 |         let handle = tokio::spawn(async move {
+   |             ^^^^^^ help: if this is intentional, prefix it with an underscore: `_handle`
+   |
+   = note: `#[warn(unused_variables)]` on by default
+
+error[E0382]: borrow of moved value: `rx`
+  --> src\main.rs:38:27
+   |
+28 |       let (tx, mut rx) = mpsc::channel::<String>(100);
+   |                ------ move occurs because `rx` has type `tokio::sync::mpsc::Receiver<String>`, which does not implement the `Copy` trait
+...
+31 |       let writer_handle = tokio::spawn(async move {
+   |  ______________________________________-
+32 | |         while let Some(url) = rx.recv().await {
+   | |                               -- variable moved due to use in generator
+33 | |             let mut writer_guard = writer.lock().await;
+34 | |             writeln!(*writer_guard, "{}", url).unwrap();
+35 | |         }
+36 | |     });
+   | |_____- value moved here
+37 |
+38 |       while let Some(url) = rx.recv().await {
+   |                             ^^^^^^^^^ value borrowed here after move
+
+For more information about this error, try `rustc --explain E0382`.
+warning: `snagrodBFDNE` (bin "snagrodBFDNE") generated 1 warning
+error: could not compile `snagrodBFDNE` (bin "snagrodBFDNE") due to previous error; 1 warning emitted
+PS C:\Users\walter\PycharmProjects\snagrodBFDNE> cargo test
+   Compiling snagrodBFDNE v0.1.0 (C:\Users\walter\PycharmProjects\snagrodBFDNE)
+warning: unused variable: `handle`
+  --> src\main.rs:48:13
+   |
+48 |         let handle = tokio::spawn(async move {
+   |             ^^^^^^ help: if this is intentional, prefix it with an underscore: `_handle`
+   |
+   = note: `#[warn(unused_variables)]` on by default
+
+error[E0382]: borrow of moved value: `rx`
+  --> src\main.rs:38:27
+   |
+28 |       let (tx, mut rx) = mpsc::channel::<String>(100);
+   |                ------ move occurs because `rx` has type `tokio::sync::mpsc::Receiver<String>`, which does not implement the `Copy` trait
+...
+31 |       let writer_handle = tokio::spawn(async move {
+   |  ______________________________________-
+32 | |         while let Some(url) = rx.recv().await {
+   | |                               -- variable moved due to use in generator
+33 | |             let mut writer_guard = writer.lock().await;
+34 | |             writeln!(*writer_guard, "{}", url).unwrap();
+35 | |         }
+36 | |     });
+   | |_____- value moved here
+37 |
+38 |       while let Some(url) = rx.recv().await {
+   |                             ^^^^^^^^^ value borrowed here after move
+
+For more information about this error, try `rustc --explain E0382`.
+
+My apologies for the confusion. We have moved the ownership of `rx` inside the writer task, therefore we cannot use `rx` after that. Let's update the code so that URLs are sent and written concurrently, and also drop the sender `tx` once we're done adding links. This will eventually cause the receiver `rx` to stop receiving, ending the task.
+
+Here's the updated code:
+
+```rust
+use reqwest::header::{HeaderMap, HeaderValue, USER_AGENT};
+use reqwest::Client;
+use scraper::{Html, Selector};
+use url::Url;
+use std::collections::HashSet;
+use std::io::{self, Write, BufWriter};
+use std::fs::File;
+use std::sync::Arc;
+use tokio::sync::{mpsc, Semaphore, Mutex};
+
+const USER_AGENT_STRING: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/99.0.9999.99 Safari/537.36";
+
+#[tokio::main]
+async fn main() -> std::io::Result<()> {
+    println!("Please enter the filename for the output file:");
+    let output_file_path = prompt_user_input();
+
+    println!("Please enter the URL of the website to crawl:");
+    let starting_url = prompt_user_input();
+
+    let max_concurrency: usize = 5; // Change this to your desired level of concurrency
+
+    let file = File::create(&output_file_path)?;
+    let writer = Arc::new(Mutex::new(BufWriter::new(file)));
+    let crawled_urls = Arc::new(Mutex::new(HashSet::new()));
+    let semaphore = Arc::new(Semaphore::new(max_concurrency));
+
+    let (tx, rx) = mpsc::channel::<String>(100);
+    tx.send(starting_url).await.unwrap();
+
+    let writer_handle = tokio::spawn({
+        let writer = Arc::clone(&writer);
+        async move {
+            while let Some(url) = rx.recv().await {
+                let mut writer_guard = writer.lock().await;
+                writeln!(*writer_guard, "{}", url).unwrap();
+            }
+        }
+    });
+
+    let crawler_handle = tokio::spawn({
+        let tx = tx.clone();
+        let semaphore = Arc::clone(&semaphore);
+        let crawled_urls = Arc::clone(&crawled_urls);
+        async move {
+            while let Some(url) = crawled_urls.lock().await.pop() {
+                let mut crawled_urls_guard = crawled_urls.lock().await;
+                if crawled_urls_guard.contains(&url) {
+                    continue;
+                }
+
+                let permit = semaphore.clone().acquire_owned().await.unwrap();
+                crawled_urls_guard.insert(url.clone());
+
+                tokio::spawn({
+                    let tx = tx.clone();
+                    async move {
+                        permit.forget();  // forget permit immediately to free it
+                        if let Some(links) = crawl(&url).await {
+                            for link in links {
+                                tx.send(link).await.unwrap();
+                            }
+                        }
+                    }
+                });
+            }
+            drop(tx); // close the channel when crawling is finished
+        }
+    });
+
+    tokio::try_join!(crawler_handle, writer_handle)?;
+
+    Ok(())
+}
+
+async fn crawl(url: &str) -> Option<Vec<String>> {
+    println!("Crawling: {}", url);
+
+    match get_links(&url).await {
+        Ok(links) => Some(links),
+        Err(err) => {
+            println!("Failed to crawl {}: {}", url, err);
+            None
+        }
+    }
+}
+
+fn get_hostname(url: &str) -> Option<String> {
+    match Url::parse(url) {
+        Ok(parsed_url) => parsed_url.host_str().map(|s| s.to_owned()),
+        Err(_) => {
+            println!("Failed to parse URL: {}", url);
+            None
+        }
+    }
+}
+
+fn resolve_absolute_url(base_url: &str, relative_url: &str) -> String {
+    if let Ok(base) = Url::parse(base_url) {
+        if let Ok(absolute) = base.join(relative_url) {
+            return absolute.to_string();
+        }
+    }
+    relative_url.to_string()
+}
+
+async fn get_links(url: &str) -> Result<Vec<String>, reqwest::Error> {
+    let client = Client::builder()
+        .default_headers(default_headers())
+        .build()?;
+
+    let response = client.get(url).send().await?;
+    let content_type = response.headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|ct| ct.to_str().ok());
+
+    if let Some(content_type) = content_type {
+        if content_type.starts_with("text/html") {
+            let body = response.text().await?;
+            let document = Html::parse_document(&body);
+            let selector = Selector::parse("a").unwrap();
+
+            let links: Vec<String> = document
+                .select(&selector)
+                .filter_map(|n| n.value().attr("href"))
+                .map(|link| resolve_absolute_url(url, link))
+                .collect();
+
+            Ok(links)
+        } else {
+            println!("Skipping non-HTML content: {}", content_type);
+            Ok(vec![])
+        }
+    } else {
+        println!("No Content-Type header found");
+        Ok(vec![])
+    }
+}
+
+fn prompt_user_input() -> String {
+    let mut input = String::new();
+    io::stdin().read_line(&mut input).unwrap();
+    input.trim().to_string()
+}
+
+fn default_headers() -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    headers.insert(USER_AGENT, HeaderValue::from_static(USER_AGENT_STRING));
+    headers
+}
+```
+
+This code spawns two tasks, one for writing URLs to a file and the other for crawling and sending URLs. This means both processes can run concurrently, and they both finish when they've done their job.
+
+Just a note: the above code assumes that the starting URL will be added to the `crawled_urls` HashSet at some point during the crawling. If not, it will keep trying to crawl it because the `crawled_urls` HashSet is used as a queue of URLs to crawl. To ensure the starting URL gets added, you can insert it into `crawled_urls` right after creating it.
+
+OK that code throws the following error: error[E0599]: no method named `pop` found for struct `tokio::sync::MutexGuard<'_, HashSet<_>>` in the current scope
+  --> src\main.rs:46:61
+   |
+46 |             while let Some(url) = crawled_urls.lock().await.pop() {
+   |                                                             ^^^ method not found in `MutexGuard<'_, HashSet<_>>`
+
+For more information about this error, try `rustc --explain E0599`.
+
+
+I apologize for the confusion. It looks like I made a mistake. The `pop` method is not available for `HashSet` in Rust. We need to implement a different mechanism to iterate over the URLs to crawl. 
+
+One approach could be to use two hashsets, one for the crawled URLs and another one for URLs that still need to be crawled. We add all new URLs to the latter hashset and move them to the former one after they have been crawled.
+
+```rust
+use reqwest::header::{HeaderMap, HeaderValue, USER_AGENT};
+use reqwest::Client;
+use scraper::{Html, Selector};
+use url::Url;
+use std::collections::HashSet;
+use std::io::{self, Write, BufWriter};
+use std::fs::File;
+use std::sync::Arc;
+use tokio::sync::{mpsc, Semaphore, Mutex};
+
+const USER_AGENT_STRING: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/99.0.9999.99 Safari/537.36";
+
+#[tokio::main]
+async fn main() -> std::io::Result<()> {
+    println!("Please enter the filename for the output file:");
+    let output_file_path = prompt_user_input();
+
+    println!("Please enter the URL of the website to crawl:");
+    let starting_url = prompt_user_input();
+
+    let max_concurrency: usize = 5; // Change this to your desired level of concurrency
+
+    let file = File::create(&output_file_path)?;
+    let writer = Arc::new(Mutex::new(BufWriter::new(file)));
+    let crawled_urls = Arc::new(Mutex::new(HashSet::new()));
+    let urls_to_crawl = Arc::new(Mutex::new(HashSet::new()));
+    urls_to_crawl.lock().await.insert(starting_url);
+    let semaphore = Arc::new(Semaphore::new(max_concurrency));
+
+    let (tx, rx) = mpsc::channel::<String>(100);
+
+    let writer_handle = tokio::spawn({
+        let writer = Arc::clone(&writer);
+        async move {
+            while let Some(url) = rx.recv().await {
+                let mut writer_guard = writer.lock().await;
+                writeln!(*writer_guard, "{}", url).unwrap();
+            }
+        }
+    });
+
+    let crawler_handle = tokio::spawn({
+        let tx = tx.clone();
+        let semaphore = Arc::clone(&semaphore);
+        let crawled_urls = Arc::clone(&crawled_urls);
+        let urls_to_crawl = Arc::clone(&urls_to_crawl);
+        async move {
+            while let Some(url) = urls_to_crawl.lock().await.iter().next().cloned() {
+                urls_to_crawl.lock().await.remove(&url);
+                let mut crawled_urls_guard = crawled_urls.lock().await;
+                if crawled_urls_guard.contains(&url) {
+                    continue;
+                }
+
+                let permit = semaphore.clone().acquire_owned().await.unwrap();
+                crawled_urls_guard.insert(url.clone());
+
+                tokio::spawn({
+                    let tx = tx.clone();
+                    let urls_to_crawl = Arc::clone(&urls_to_crawl);
+                    async move {
+                        permit.forget();  // forget permit immediately to free it
+                        if let Some(links) = crawl(&url).await {
+                            for link in links {
+                                tx.send(link.clone()).await.unwrap();
+                                urls_to_crawl.lock().await.insert(link);
+                            }
+                        }
+                    }
+                });
+            }
+            drop(tx); // close the channel when crawling is finished
+        }
+    });
+
+    tokio::try_join!(crawler_handle, writer_handle)?;
+
+    Ok(())
+}
+
+async fn crawl(url: &str) -> Option<Vec<String>> {
+    println!("Crawling: {}", url);
+
+    match get_links(&url).await {
+        Ok(links) => Some(links),
+        Err(err) => {
+            println!("Failed to crawl {}: {}", url, err);
+            None
+        }
+    }
+}
+
+fn get_hostname(url: &str) -> Option<String> {
+    match Url::parse(url) {
+        Ok(parsed_url) => parsed_url.host_str().map(|s| s.to_owned()),
+        Err(_) => {
+            println!("Failed to parse URL: {}", url);
+            None
+        }
+    }
+}
+
+fn resolve_absolute_url(base_url: &str, relative_url: &str) -> String {
+    if let Ok(base) = Url::parse(base_url) {
+        if let Ok(absolute) = base.join(relative_url) {
+            return absolute.to_string();
+        }
+    }
+    relative_url.to_string()
+}
+
+async fn get_links(url: &str) -> Result<Vec<String>, reqwest::Error> {
+    let client = Client::builder()
+        .default_headers(default_headers())
+        .build()?;
+
+    let response = client.get(url).send().await?;
+    let content_type = response.headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|ct| ct.to_str().ok());
+
+    if let Some(content_type) = content_type {
+        if content_type.starts_with("text/html") {
+            let body = response.text().await?;
+            let document = Html::parse_document(&body);
+            let selector = Selector::parse("a").unwrap();
+
+            let links: Vec<String> = document
+                .select(&selector)
+                .filter_map(|n| n.value().attr("href"))
+                .map(|link| resolve_absolute_url(url, link))
+                .collect();
+
+            Ok(links)
+        } else {
+            println!("Skipping non-HTML content: {}", content_type);
+            Ok(vec![])
+        }
+    } else {
+        println!("No Content-Type header found");
+        Ok(vec![])
+    }
+}
+
+fn prompt_user_input() -> String {
+    let mut input = String::new();
+    io::stdin().read_line(&mut input).unwrap();
+    input.trim().to_string()
+}
+
+fn default_headers() -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    headers.insert(USER_AGENT, HeaderValue::from_static(USER_AGENT_STRING));
+    headers
+}
+```
+
+This version of the code maintains a list of URLs to crawl in `urls_to_crawl`, and it pops URLs from this list one by one until there are no more URLs to crawl. It also makes sure that the same URL is not crawled twice by keeping track of already crawled URLs in `crawled_urls`. When it finds new links during the crawling process, it adds them to `urls_to_crawl`. This way, the web crawler will stop when it has crawled all URLs and there are no more URLs to crawl.
+
+My apologies for the oversight. The receiver `rx` needs to be mutable for the `.recv()` method to be called on it. Here's the corrected code:
+
+```rust
+use reqwest::header::{HeaderMap, HeaderValue, USER_AGENT};
+use reqwest::Client;
+use scraper::{Html, Selector};
+use url::Url;
+use std::collections::HashSet;
+use std::io::{self, Write, BufWriter};
+use std::fs::File;
+use std::sync::Arc;
+use tokio::sync::{mpsc, Semaphore, Mutex};
+
+const USER_AGENT_STRING: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/99.0.9999.99 Safari/537.36";
+
+#[tokio::main]
+async fn main() -> std::io::Result<()> {
+    println!("Please enter the filename for the output file:");
+    let output_file_path = prompt_user_input();
+
+    println!("Please enter the URL of the website to crawl:");
+    let starting_url = prompt_user_input();
+
+    let max_concurrency: usize = 5; // Change this to your desired level of concurrency
+
+    let file = File::create(&output_file_path)?;
+    let writer = Arc::new(Mutex::new(BufWriter::new(file)));
+    let crawled_urls = Arc::new(Mutex::new(HashSet::new()));
+    let urls_to_crawl = Arc::new(Mutex::new(HashSet::new()));
+    urls_to_crawl.lock().await.insert(starting_url);
+    let semaphore = Arc::new(Semaphore::new(max_concurrency));
+
+    let (tx, mut rx) = mpsc::channel::<String>(100);
+
+    let writer_handle = tokio::spawn({
+        let writer = Arc::clone(&writer);
+        async move {
+            while let Some(url) = rx.recv().await {
+                let mut writer_guard = writer.lock().await;
+                writeln!(*writer_guard, "{}", url).unwrap();
+            }
+        }
+    });
+
+    let crawler_handle = tokio::spawn({
+        let tx = tx.clone();
+        let semaphore = Arc::clone(&semaphore);
+        let crawled_urls = Arc::clone(&crawled_urls);
+        let urls_to_crawl = Arc::clone(&urls_to_crawl);
+        async move {
+            while let Some(url) = urls_to_crawl.lock().await.iter().next().cloned() {
+                urls_to_crawl.lock().await.remove(&url);
+                let mut crawled_urls_guard = crawled_urls.lock().await;
+                if crawled_urls_guard.contains(&url) {
+                    continue;
+                }
+
+                let permit = semaphore.clone().acquire_owned().await.unwrap();
+                crawled_urls_guard.insert(url.clone());
+
+                tokio::spawn({
+                    let tx = tx.clone();
+                    let urls_to_crawl = Arc::clone(&urls_to_crawl);
+                    async move {
+                        permit.forget();  // forget permit immediately to free it
+                        if let Some(links) = crawl(&url).await {
+                            for link in links {
+                                tx.send(link.clone()).await.unwrap();
+                                urls_to_crawl.lock().await.insert(link);
+                            }
+                        }
+                    }
+                });
+            }
+            drop(tx); // close the channel when crawling is finished
+        }
+    });
+
+    tokio::try_join!(crawler_handle, writer_handle)?;
+
+    Ok(())
+}
+
+async fn crawl(url: &str) -> Option<Vec<String>> {
+    println!("Crawling: {}", url);
+
+    match get_links(&url).await {
+        Ok(links) => Some(links),
+        Err(err) => {
+            println!("Failed to crawl {}: {}", url, err);
+            None
+        }
+    }
+}
+
+fn get_hostname(url: &str) -> Option<String> {
+    match Url::parse(url) {
+        Ok(parsed_url) => parsed_url.host_str().map(|s| s.to_owned()),
+        Err(_) => {
+            println!("Failed to parse URL: {}", url);
+            None
+        }
+    }
+}
+
+fn resolve_absolute_url(base_url: &str, relative_url: &str) -> String {
+    if let Ok(base) = Url::parse(base_url) {
+        if let Ok(absolute) = base.join(relative_url) {
+            return absolute.to_string();
+        }
+    }
+    relative_url.to_string()
+}
+
+async fn get_links(url: &str) -> Result<Vec<String>, reqwest::Error> {
+    let client = Client::builder()
+        .default_headers(default_headers())
+        .build()?;
+
+    let response = client.get(url).send().await?;
+    let content_type = response.headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|ct| ct.to_str().ok());
+
+    if let Some(content_type) = content_type {
+        if content_type.starts_with("text/html") {
+            let body = response.text().await?;
+            let document = Html::parse_document(&body);
+            let selector = Selector::parse("a").unwrap();
+
+            let links: Vec<String> = document
+                .select(&selector)
+                .filter_map(|n| n.value().attr("href"))
+                .map(|link| resolve_absolute_url(url, link))
+                .collect();
+
+            Ok(links)
+        } else {
+            println!("Skipping non-HTML content: {}", content_type);
+            Ok(vec![])
+        }
+    } else {
+        println!("No Content-Type header found");
+        Ok(vec![])
+    }
+}
+
+fn prompt_user_input() -> String {
+    let mut input = String::new();
+    io::stdin().read_line(&mut input).unwrap();
+    input.trim().to_string()
+}
+
+fn default_headers() -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    headers.insert(USER_AGENT, HeaderValue::from_static(USER_AGENT_STRING));
+    headers
+}
+```
+
+OK running that code the program just sits, doesn't crawl and doesn't write any links to the output file. 
+
+
+I apologize for the confusion, I made a mistake in my last solution by forgetting to loop until the work is done. 
+
+We should keep trying to pull URLs from the `urls_to_crawl` set until it's empty, and also, when we run out of URLs, we should await any ongoing crawling tasks to finish, because they might add new URLs to `urls_to_crawl`. 
+
+This requires keeping track of the number of ongoing crawling tasks, and awaiting them when there are no more URLs left to start new tasks with. The updated code is as follows:
+
+```rust
+use reqwest::header::{HeaderMap, HeaderValue, USER_AGENT};
+use reqwest::Client;
+use scraper::{Html, Selector};
+use url::Url;
+use std::collections::HashSet;
+use std::io::{self, Write, BufWriter};
+use std::fs::File;
+use std::sync::Arc;
+use tokio::sync::{mpsc, Semaphore, Mutex};
+
+const USER_AGENT_STRING: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/99.0.9999.99 Safari/537.36";
+
+#[tokio::main]
+async fn main() -> std::io::Result<()> {
+    println!("Please enter the filename for the output file:");
+    let output_file_path = prompt_user_input();
+
+    println!("Please enter the URL of the website to crawl:");
+    let starting_url = prompt_user_input();
+
+    let max_concurrency: usize = 5; // Change this to your desired level of concurrency
+
+    let file = File::create(&output_file_path)?;
+    let writer = Arc::new(Mutex::new(BufWriter::new(file)));
+    let crawled_urls = Arc::new(Mutex::new(HashSet::new()));
+    let urls_to_crawl = Arc::new(Mutex::new(HashSet::new()));
+    urls_to_crawl.lock().await.insert(starting_url);
+    let semaphore = Arc::new(Semaphore::new(max_concurrency));
+    let ongoing_crawls = Arc::new(Mutex::new(0));
+
+    let (tx, mut rx) = mpsc::channel::<String>(100);
+
+    let writer_handle = tokio::spawn({
+        let writer = Arc::clone(&writer);
+        async move {
+            while let Some(url) = rx.recv().await {
+                let mut writer_guard = writer.lock().await;
+                writeln!(*writer_guard, "{}", url).unwrap();
+            }
+        }
+    });
+
+    loop {
+        let url_option = urls_to_crawl.lock().await.iter().next().cloned();
+        match url_option {
+            Some(url) => {
+                urls_to_crawl.lock().await.remove(&url);
+                let mut crawled_urls_guard = crawled_urls.lock().await;
+                if crawled_urls_guard.contains(&url) {
+                    continue;
+                }
+
+                let permit = semaphore.clone().acquire_owned().await.unwrap();
+                crawled_urls_guard.insert(url.clone());
+                *ongoing_crawls.lock().await += 1;
+
+                let ongoing_crawls = Arc::clone(&ongoing_crawls);
+                let urls_to_crawl = Arc::clone(&urls_to_crawl);
+                let tx = tx.clone();
+
+                tokio::spawn(async move {
+                    permit.forget();
+                    if let Some(links) = crawl(&url).await {
+                        for link in links {
+                            tx.send(link.clone()).await.unwrap();
+                            urls_to_crawl.lock().await.insert(link);
+                        }
+                    }
+                    *ongoing_crawls.lock().await -= 1;
+                });
+            }
+            None => {
+                if *ongoing_crawls.lock().await == 0 {
+                    break;
+                }
+                // Sleep before checking again to prevent busy waiting
+                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+            }
+        }
+    }
+    drop(tx); // close the channel when crawling is finished
+    writer_handle.await.unwrap();
+
+    Ok(())
+}
+
+async fn crawl(url: &str) -> Option<Vec<String>> {
+    println!("Crawling: {}", url);
+
+    match get_links(&url).await {
+        Ok(links) => Some(links),
+        Err(err) => {
+            println!("Failed to crawl {}: {}", url, err);
+            None
+        }
+    }
+}
+
+fn get_hostname(url: &str) -> Option<String> {
+    match Url::parse(url) {
+        Ok(parsed_url) => parsed_url.host_str().map(|s| s.to_owned()),
+        Err(_) => {
+            println!("Failed to parse URL: {}", url);
+            None
+        }
+    }
+}
+
+fn resolve_absolute_url(base_url: &str, relative_url: &str) -> String {
+    if let Ok(base) = Url::parse(base_url) {
+        if let Ok(absolute) = base.join(relative_url) {
+            return absolute.to_string();
+        }
+    }
+    relative_url.to_string()
+}
+
+async fn get_links(url: &str) -> Result<Vec<String>, reqwest::Error> {
+    let client = Client::builder()
+        .default_headers(default_headers())
+        .build()?;
+
+    let response = client.get(url).send().await?;
+    let content_type = response.headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|ct| ct.to_str().ok());
+
+    if let Some(content_type) = content_type {
+        if content_type.starts_with("text/html") {
+            let body = response.text().await?;
+            let document = Html::parse_document(&body);
+            let selector = Selector::parse("a").unwrap();
+
+            let links: Vec<String> = document
+                .select(&selector)
+                .filter_map(|n| n.value().attr("href"))
+                .map(|link| resolve_absolute_url(url, link))
+                .collect();
+
+            Ok(links)
+        } else {
+            println!("Skipping non-HTML content: {}", content_type);
+            Ok(vec![])
+        }
+    } else {
+        println!("No Content-Type header found");
+        Ok(vec![])
+    }
+}
+
+fn prompt_user_input() -> String {
+    let mut input = String::new();
+    io::stdin().read_line(&mut input).unwrap();
+    input.trim().to_string()
+}
+
+fn default_headers() -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    headers.insert(USER_AGENT, HeaderValue::from_static(USER_AGENT_STRING));
+    headers
+}
+```
+This version should not stop until the website has been fully crawled, and all found URLs have been written to the file. It includes a sleep to prevent it from consuming too much CPU while waiting for ongoing tasks to finish. The sleep duration can be adjusted as needed. Please try this and see if it works better for your case.
+
+OK. That code is looking really good. We just need to tweak it a bit. We want the crawled links to stream in the console when the program is running so we know it's doing something. Can you refactor it to add this element? 
+
+Sure! We can print each URL to the console when it's crawled. Here is the updated code:
+
+```rust
+use reqwest::header::{HeaderMap, HeaderValue, USER_AGENT};
+use reqwest::Client;
+use scraper::{Html, Selector};
+use url::Url;
+use std::collections::HashSet;
+use std::io::{self, Write, BufWriter};
+use std::fs::File;
+use std::sync::Arc;
+use tokio::sync::{mpsc, Semaphore, Mutex};
+
+const USER_AGENT_STRING: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/99.0.9999.99 Safari/537.36";
+
+#[tokio::main]
+async fn main() -> std::io::Result<()> {
+    println!("Please enter the filename for the output file:");
+    let output_file_path = prompt_user_input();
+
+    println!("Please enter the URL of the website to crawl:");
+    let starting_url = prompt_user_input();
+
+    let max_concurrency: usize = 5; // Change this to your desired level of concurrency
+
+    let file = File::create(&output_file_path)?;
+    let writer = Arc::new(Mutex::new(BufWriter::new(file)));
+    let crawled_urls = Arc::new(Mutex::new(HashSet::new()));
+    let urls_to_crawl = Arc::new(Mutex::new(HashSet::new()));
+    urls_to_crawl.lock().await.insert(starting_url);
+    let semaphore = Arc::new(Semaphore::new(max_concurrency));
+    let ongoing_crawls = Arc::new(Mutex::new(0));
+
+    let (tx, mut rx) = mpsc::channel::<String>(100);
+
+    let writer_handle = tokio::spawn({
+        let writer = Arc::clone(&writer);
+        async move {
+            while let Some(url) = rx.recv().await {
+                let mut writer_guard = writer.lock().await;
+                writeln!(*writer_guard, "{}", url).unwrap();
+                println!("Crawled URL: {}", url);
+            }
+        }
+    });
+
+    loop {
+        let url_option = urls_to_crawl.lock().await.iter().next().cloned();
+        match url_option {
+            Some(url) => {
+                urls_to_crawl.lock().await.remove(&url);
+                let mut crawled_urls_guard = crawled_urls.lock().await;
+                if crawled_urls_guard.contains(&url) {
+                    continue;
+                }
+
+                let permit = semaphore.clone().acquire_owned().await.unwrap();
+                crawled_urls_guard.insert(url.clone());
+                *ongoing_crawls.lock().await += 1;
+
+                let ongoing_crawls = Arc::clone(&ongoing_crawls);
+                let urls_to_crawl = Arc::clone(&urls_to_crawl);
+                let tx = tx.clone();
+
+                tokio::spawn(async move {
+                    permit.forget();
+                    if let Some(links) = crawl(&url).await {
+                        for link in links {
+                            tx.send(link.clone()).await.unwrap();
+                            urls_to_crawl.lock().await.insert(link);
+                        }
+                    }
+                    *ongoing_crawls.lock().await -= 1;
+                });
+            }
+            None => {
+                if *ongoing_crawls.lock().await == 0 {
+                    break;
+                }
+                // Sleep before checking again to prevent busy waiting
+                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+            }
+        }
+    }
+    drop(tx); // close the channel when crawling is finished
+    writer_handle.await.unwrap();
+
+    Ok(())
+}
+
+async fn crawl(url: &str) -> Option<Vec<String>> {
+    println!("Crawling: {}", url);
+
+    match get_links(&url).await {
+        Ok(links) => Some(links),
+        Err(err) => {
+            println!("Failed to crawl {}: {}", url, err);
+            None
+        }
+    }
+}
+
+fn get_hostname(url: &str) -> Option<String> {
+    match Url::parse(url) {
+        Ok(parsed_url) => parsed_url.host_str().map(|s| s.to_owned()),
+        Err(_) => {
+            println!("Failed to parse URL: {}", url);
+            None
+        }
+    }
+}
+
+fn resolve_absolute_url(base_url: &str, relative_url: &str) -> String {
+    if let Ok(base) = Url::parse(base_url) {
+        if let Ok(absolute) = base.join(relative_url) {
+            return absolute.to_string();
+        }
+    }
+    relative_url.to_string()
+}
+
+async fn get_links(url: &str) -> Result<Vec<String>, reqwest::Error> {
+    let client = Client::builder()
+        .default_headers(default_headers())
+        .build()?;
+
+    let response = client.get(url).send().await?;
+    let content_type = response.headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|ct| ct.to_str().ok());
+
+    if let Some(content_type) = content_type {
+        if content_type.starts_with("text/html") {
+            let body = response.text().await?;
+            let document = Html::parse_document(&body);
+            let selector = Selector::parse("a").unwrap();
+
+            let links: Vec<String> = document
+                .select(&selector)
+                .filter_map(|n| n.value().attr("href"))
+                .map(|link| resolve_absolute_url(url, link))
+                .collect();
+
+            Ok(links)
+        } else {
+            println!("Skipping non-HTML content: {}", content_type);
+            Ok(vec![])
+        }
+    } else {
+        println!("No Content-Type header found");
+        Ok(vec![])
+    }
+}
+
+fn prompt_user_input() -> String {
+    let mut input = String::new();
+    io::stdin().read_line(&mut input).unwrap();
+    input.trim().to_string()
+}
+
+fn default_headers() -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    headers.insert(USER_AGENT, HeaderValue::from_static(USER_AGENT_STRING));
+    headers
+}
+```
+
+I've added a `println!` statement in the `writer_handle` to print out each URL as it's crawled. This should let you see the URLs in the console as the crawler runs.
+
+
+Outstanding work! That's working well, however I noticed for the website so scanned it appears to freeze at this link: https://www.anthem.com/machine-readable-file/search/
+Having crawled the same website I know the program can return 252 entries, however our most recent iteration of said code appears to freeze at 152. What's going on here? 
+
+There could be a variety of reasons for the program to freeze, but based on your description, it might be that the program is being blocked by the server due to too many requests within a short time frame. Some websites limit the rate of requests from a single client to prevent them from overwhelming the server, a practice known as rate limiting. If a client exceeds this limit, the server may refuse further requests for a certain amount of time.
+
+Additionally, certain pages might take a long time to respond, causing the scraper to wait indefinitely. We can fix this by setting a timeout for each request in the `get_links` function. Here's how you can do that:
+
+```rust
+use std::time::Duration;
+
+async fn get_links(url: &str) -> Result<Vec<String>, reqwest::Error> {
+    let client = Client::builder()
+        .default_headers(default_headers())
+        .timeout(Duration::from_secs(10))  // 10 seconds timeout
+        .build()?;
+
+    let response = client.get(url).send().await?;
+    // the rest of the function...
+}
+```
+
+Here we are setting a timeout of 10 seconds for each request. You can adjust this value as needed. 
+
+If the server is blocking the requests because of rate limiting, you could consider adding a delay before each request to space them out more. This can be done using the `tokio::time::sleep` function. You could also try to randomize the delay to make the requests appear less robotic.
+
+Please note that if you're scraping a website on a large scale, you should always check and respect the site's `robots.txt` file and terms of service to ensure you're in compliance with their policies on web scraping.
+
+That's working great however I notice that the program does not appear to be waiting for the timeout duration. It appears to arbitrarily crawl a number of links and then freezes up. I wonder if this might not be because it has exhausted all links to be crawled for a given domain but doesn't know how to gracefully exit? 
+
+It seems like you are correct. The issue is that the main loop in the code may still be waiting for new URLs to be pushed into the queue even after all URLs have been crawled. This might make the program appear to freeze.
+
+To resolve this issue, we could use a counter that tracks the number of active crawling tasks. We increment this counter every time we start a new task and decrement it when a task finishes. If the counter drops to zero, it means that there are no more active tasks and we can safely exit the main loop.
+
+The modified main loop would look like this:
+
+```rust
+let active_tasks = Arc::new(AtomicUsize::new(0));
+
+while let Some(url) = {
+    let mut queue_guard = url_queue.lock().await;
+    queue_guard.pop()
+} {
+    let mut crawled_urls_guard = crawled_urls.lock().await;
+    if crawled_urls_guard.contains(&url) {
+        continue;
+    }
+
+    crawled_urls_guard.insert(url.clone());
+
+    let active_tasks_clone = active_tasks.clone();
+    active_tasks.fetch_add(1, Ordering::Relaxed);
+    
+    let permit = semaphore.clone().acquire_owned().await.unwrap();
+    let tx_clone = tx.clone();
+
+    tokio::spawn(async move {
+        defer! {
+            active_tasks_clone.fetch_sub(1, Ordering::Relaxed);
+        }
+
+        permit.forget();  // forget permit immediately to free it
+        if let Some(links) = crawl(&url).await {
+            for link in links {
+                tx_clone.send(link).await.unwrap();
+            }
+        }
+    });
+}
+
+// Wait until all tasks have finished
+while active_tasks.load(Ordering::Relaxed) > 0 {
+    tokio::time::sleep(Duration::from_millis(100)).await;
+}
+```
+
+The above code uses the `AtomicUsize` type from the standard library for the counter. This is a thread-safe integer type that can be safely shared and modified by multiple threads.
+
+Please note that I'm using the `defer!` macro from the `scopeguard` crate to decrement the counter when the task finishes. This ensures that the counter is decremented even if the task panics. You will need to add `scopeguard` to your `Cargo.toml` file:
+
+```toml
+[dependencies]
+scopeguard = "1.1"
+```
+
+Then import the `defer!` macro at the top of your Rust file:
+
+```rust
+#[macro_use(defer)]
+extern crate scopeguard;
+```
+
+I hope this helps! Let me know if you have further questions.
+
+If the main loop in the code may still be waiting for new URLs to be pushed into the queue even after all URLs have been crawled this might make the program appear to freeze.
+
+To resolve this issue, we implement a counter that tracks the number of active crawling tasks. We increment this counter every time we start a new task and decrement it when a task finishes. If the counter drops to zero, it means that there are no more active tasks and we can safely exit the main loop. Implement the desired changes by refactoring the following code. Produce the refactored code in it's entirety.
+
+use reqwest::header::{HeaderMap, HeaderValue, USER_AGENT};
+use reqwest::Client;
+use scraper::{Html, Selector};
+use url::Url;
+use std::collections::HashSet;
+use std::io::{self, Write, BufWriter};
+use std::fs::File;
+use std::sync::Arc;
+use tokio::sync::{mpsc, Semaphore, Mutex};
+use std::time::Duration;
+
+
+const USER_AGENT_STRING: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/99.0.9999.99 Safari/537.36";
+
+#[tokio::main]
+async fn main() -> std::io::Result<()> {
+    println!("Please enter the filename for the output file:");
+    let output_file_path = prompt_user_input();
+
+    println!("Please enter the URL of the website to crawl:");
+    let starting_url = prompt_user_input();
+
+    let max_concurrency: usize = 5; // Change this to your desired level of concurrency
+
+    let file = File::create(&output_file_path)?;
+    let writer = Arc::new(Mutex::new(BufWriter::new(file)));
+    let crawled_urls = Arc::new(Mutex::new(HashSet::new()));
+    let urls_to_crawl = Arc::new(Mutex::new(HashSet::new()));
+    urls_to_crawl.lock().await.insert(starting_url);
+    let semaphore = Arc::new(Semaphore::new(max_concurrency));
+    let ongoing_crawls = Arc::new(Mutex::new(0));
+
+    let (tx, mut rx) = mpsc::channel::<String>(100);
+
+    let writer_handle = tokio::spawn({
+        let writer = Arc::clone(&writer);
+        async move {
+            while let Some(url) = rx.recv().await {
+                let mut writer_guard = writer.lock().await;
+                writeln!(*writer_guard, "{}", url).unwrap();
+                println!("Crawled URL: {}", url);
+            }
+        }
+    });
+
+    loop {
+        let url_option = urls_to_crawl.lock().await.iter().next().cloned();
+        match url_option {
+            Some(url) => {
+                urls_to_crawl.lock().await.remove(&url);
+                let mut crawled_urls_guard = crawled_urls.lock().await;
+                if crawled_urls_guard.contains(&url) {
+                    continue;
+                }
+
+                let permit = semaphore.clone().acquire_owned().await.unwrap();
+                crawled_urls_guard.insert(url.clone());
+                *ongoing_crawls.lock().await += 1;
+
+                let ongoing_crawls = Arc::clone(&ongoing_crawls);
+                let urls_to_crawl = Arc::clone(&urls_to_crawl);
+                let tx = tx.clone();
+
+                tokio::spawn(async move {
+                    permit.forget();
+                    if let Some(links) = crawl(&url).await {
+                        for link in links {
+                            tx.send(link.clone()).await.unwrap();
+                            urls_to_crawl.lock().await.insert(link);
+                        }
+                    }
+                    *ongoing_crawls.lock().await -= 1;
+                });
+            }
+            None => {
+                if *ongoing_crawls.lock().await == 0 {
+                    break;
+                }
+                // Sleep before checking again to prevent busy waiting
+                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+            }
+        }
+    }
+    drop(tx); // close the channel when crawling is finished
+    writer_handle.await.unwrap();
+
+    Ok(())
+}
+
+async fn crawl(url: &str) -> Option<Vec<String>> {
+    println!("Crawling: {}", url);
+
+    match get_links(&url).await {
+        Ok(links) => Some(links),
+        Err(err) => {
+            println!("Failed to crawl {}: {}", url, err);
+            None
+        }
+    }
+}
+
+fn get_hostname(url: &str) -> Option<String> {
+    match Url::parse(url) {
+        Ok(parsed_url) => parsed_url.host_str().map(|s| s.to_owned()),
+        Err(_) => {
+            println!("Failed to parse URL: {}", url);
+            None
+        }
+    }
+}
+
+fn resolve_absolute_url(base_url: &str, relative_url: &str) -> String {
+    if let Ok(base) = Url::parse(base_url) {
+        if let Ok(absolute) = base.join(relative_url) {
+            return absolute.to_string();
+        }
+    }
+    relative_url.to_string()
+}
+
+async fn get_links(url: &str) -> Result<Vec<String>, reqwest::Error> {
+    let client = Client::builder()
+        .default_headers(default_headers())
+        .timeout(Duration::from_secs(5))  // 10 seconds timeout
+        .build()?;
+
+    let response = client.get(url).send().await?;
+    let content_type = response.headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|ct| ct.to_str().ok());
+
+    if let Some(content_type) = content_type {
+        if content_type.starts_with("text/html") {
+            let body = response.text().await?;
+            let document = Html::parse_document(&body);
+            let selector = Selector::parse("a").unwrap();
+
+            let links: Vec<String> = document
+                .select(&selector)
+                .filter_map(|n| n.value().attr("href"))
+                .map(|link| resolve_absolute_url(url, link))
+                .collect();
+
+            Ok(links)
+        } else {
+            println!("Skipping non-HTML content: {}", content_type);
+            Ok(vec![])
+        }
+    } else {
+        println!("No Content-Type header found");
+        Ok(vec![])
+    }
+}
+
+fn prompt_user_input() -> String {
+    let mut input = String::new();
+    io::stdin().read_line(&mut input).unwrap();
+    input.trim().to_string()
+}
+
+fn default_headers() -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    headers.insert(USER_AGENT, HeaderValue::from_static(USER_AGENT_STRING));
+    headers
+}
+
+Absolutely, I can integrate the active tasks counter into your current code. Here's the updated code:
+
+```rust
+use reqwest::header::{HeaderMap, HeaderValue, USER_AGENT};
+use reqwest::Client;
+use scraper::{Html, Selector};
+use url::Url;
+use std::collections::HashSet;
+use std::io::{self, Write, BufWriter};
+use std::fs::File;
+use std::sync::Arc;
+use tokio::sync::{mpsc, Semaphore, Mutex};
+use std::time::Duration;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use scopeguard::defer;
+
+const USER_AGENT_STRING: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/99.0.9999.99 Safari/537.36";
+
+#[tokio::main]
+async fn main() -> std::io::Result<()> {
+    println!("Please enter the filename for the output file:");
+    let output_file_path = prompt_user_input();
+
+    println!("Please enter the URL of the website to crawl:");
+    let starting_url = prompt_user_input();
+
+    let max_concurrency: usize = 5; // Change this to your desired level of concurrency
+
+    let file = File::create(&output_file_path)?;
+    let writer = Arc::new(Mutex::new(BufWriter::new(file)));
+    let crawled_urls = Arc::new(Mutex::new(HashSet::new()));
+    let urls_to_crawl = Arc::new(Mutex::new(HashSet::new()));
+    urls_to_crawl.lock().await.insert(starting_url);
+    let semaphore = Arc::new(Semaphore::new(max_concurrency));
+    let active_tasks = Arc::new(AtomicUsize::new(0));
+
+    let (tx, mut rx) = mpsc::channel::<String>(100);
+
+    let writer_handle = tokio::spawn({
+        let writer = Arc::clone(&writer);
+        async move {
+            while let Some(url) = rx.recv().await {
+                let mut writer_guard = writer.lock().await;
+                writeln!(*writer_guard, "{}", url).unwrap();
+                println!("Crawled URL: {}", url);
+            }
+        }
+    });
+
+    loop {
+        let url_option = urls_to_crawl.lock().await.iter().next().cloned();
+        match url_option {
+            Some(url) => {
+                urls_to_crawl.lock().await.remove(&url);
+                let mut crawled_urls_guard = crawled_urls.lock().await;
+                if crawled_urls_guard.contains(&url) {
+                    continue;
+                }
+
+                let permit = semaphore.clone().acquire_owned().await.unwrap();
+                crawled_urls_guard.insert(url.clone());
+                active_tasks.fetch_add(1, Ordering::Relaxed);
+
+                let active_tasks = Arc::clone(&active_tasks);
+                let urls_to_crawl = Arc::clone(&urls_to_crawl);
+                let tx = tx.clone();
+
+                tokio::spawn(async move {
+                    defer! {
+                        active_tasks.fetch_sub(1, Ordering::Relaxed);
+                    }
+
+                    permit.forget();
+                    if let Some(links) = crawl(&url).await {
+                        for link in links {
+                            tx.send(link.clone()).await.unwrap();
+                            urls_to_crawl.lock().await.insert(link);
+                        }
+                    }
+                });
+            }
+            None => {
+                if active_tasks.load(Ordering::Relaxed) == 0 {
+                    break;
+                }
+                // Sleep before checking again to prevent busy waiting
+                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+            }
+        }
+    }
+    drop(tx); // close the channel when crawling is finished
+    writer_handle.await.unwrap();
+
+    Ok(())
+}
+
+async fn crawl(url: &str) -> Option<Vec<String>> {
+    println!("Crawling: {}", url);
+
+    match get_links(&url).await {
+        Ok(links) => Some(links),
+        Err(err) => {
+            println!("Failed to crawl {}: {}", url, err);
+            None
+        }
+    }
+}
+
+fn get_hostname(url: &str) -> Option<String> {
+    match Url::parse(url) {
+        Ok(parsed_url) => parsed_url.host_str().map(|s| s.to_owned()),
+        Err(_) => {
+            println!("Failed to parse URL: {}", url);
+            None
+        }
+    }
+}
+
+fn resolve_absolute_url(base_url: &str, relative_url: &str) -> String {
+    if let Ok(base) = Url::parse(base_url) {
+        if let Ok(absolute) = base.join(relative_url) {
+            return absolute.to_string();
+        }
+    }
+    relative_url.to_string()
+}
+
+async fn get_links(url: &str) -> Result<Vec<String>, reqwest::Error> {
+    let client = Client::builder()
+        .default_headers(default_headers())
+        .timeout(Duration::from_secs(5))  // 10 seconds timeout
+        .build()?;
+
+    let response = client.get(url).send().await?;
+    let content_type = response.headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|ct| ct.to_str().ok());
+
+    if let Some(content_type) = content_type {
+        if content_type.starts_with("text/html") {
+            let body = response.text().await?;
+            let document = Html::parse_document(&body);
+            let selector = Selector::parse("a").unwrap();
+
+            let links: Vec<String> = document
+                .select(&selector)
+                .filter_map(|n| n.value().attr("href"))
+                .map(|link| resolve_absolute_url(url, link))
+                .collect();
+
+            Ok(links)
+        } else {
+            println!("Skipping non-HTML content: {}", content_type);
+            Ok(vec![])
+        }
+    } else {
+        println!("No Content-Type header found");
+        Ok(vec![])
+    }
+}
+
+fn prompt_user_input() -> String {
+    let mut input = String::new();
+    io::stdin().read_line(&mut input).unwrap();
+    input.trim().to_string()
+}
+
+fn default_headers() -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    headers.insert(USER_AGENT, HeaderValue::from_static(USER_AGENT_STRING));
+    headers
+}
+```
+
+This version of the code includes a counter for active tasks and checks whether the count is zero after checking the queue. If the count is zero, it means there are no more links left to crawl, so it breaks the loop. If not, it sleeps for a while and then checks again. This prevents busy waiting and makes the code more efficient.
