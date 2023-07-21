@@ -1,0 +1,15 @@
+[package]
+name = "rustindexer"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+walkdir = "2.3.1"
+flate2 = "1.0.20"
+serde_json = "1.0.64"
+rustyline = "8.0.0"
+dirs = "3.0.2"
+winapi = { version = "0.3", features = ["winbase", "minwindef", "winnt", "wincon", "handleapi"] }
+
