@@ -2,6 +2,8 @@ use rayon::prelude::*;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 fn move_file(source: &Path, destination: &Path) -> io::Result<()> {
     fs::copy(source, destination).and_then(|_| fs::remove_file(source))
@@ -59,26 +61,46 @@ fn main() {
     let file_paths = get_files_in_directory(&source_dir, recursive)
         .expect("Failed to read files from source directory");
 
+    let start = Instant::now();
+    let total_files = Arc::new(Mutex::new(0));
+    let total_size = Arc::new(Mutex::new(0));
+
     file_paths.par_iter()
         .filter(|path| path.is_file() && path.extension().map_or(false, |ext| ext.to_str().unwrap_or("") == file_type))
         .for_each(|source_path| {
             let file_name = source_path.file_name().unwrap();
             let destination_path = Path::new(&destination_dir).join(file_name);
+            let metadata = fs::metadata(&source_path).unwrap();
 
             println!("Processing file: {:?}", source_path);
 
             if operation {
                 match fs::copy(&source_path, &destination_path) {
-                    Ok(_) => println!("Copied file to: {:?}", destination_path),
+                    Ok(_) => {
+                        println!("Copied file to: {:?}", destination_path);
+                        *total_files.lock().unwrap() += 1;
+                        *total_size.lock().unwrap() += metadata.len();
+                    }
                     Err(e) => println!("Failed to copy file: {:?}, Error: {:?}", source_path, e),
                 }
             } else {
                 match move_file(&source_path, &destination_path) {
-                    Ok(_) => println!("Moved file to: {:?}", destination_path),
+                    Ok(_) => {
+                        println!("Moved file to: {:?}", destination_path);
+                        *total_files.lock().unwrap() += 1;
+                        *total_size.lock().unwrap() += metadata.len();
+                    }
                     Err(e) => println!("Failed to move file: {:?}, Error: {:?}", source_path, e),
                 }
             }
         });
 
+    let duration = start.elapsed();
     println!("Operation completed successfully!");
+    println!(
+        "Total files transferred: {}, total size transferred: {} bytes, total time elapsed: {:.2?}",
+        *total_files.lock().unwrap(),
+        *total_size.lock().unwrap(),
+        duration
+    );
 }
