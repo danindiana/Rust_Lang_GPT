@@ -7,8 +7,8 @@ use tokio::task;
 use std::io::{self, Write};
 
 const MAX_PAGES_PER_DOMAIN: usize = 1000; // Set your desired max pages per domain here
-const MAX_DEPTH: usize = 5; // Set your desired maximum depth here
-const MIN_THREADS: usize = 5;
+const MAX_DEPTH: usize = 7; // Set your desired maximum depth here
+const MIN_THREADS: usize = 7;
 const MAX_THREADS: usize = 50;
 const ERROR_THRESHOLD: usize = 10;
 
@@ -26,14 +26,14 @@ async fn main() -> std::io::Result<()> {
 
     // Prompt the user for the domain
     print!("Please enter the domain to begin crawling: ");
-    io::stdout().flush()?; 
+    io::stdout().flush()?;
     let mut domain = String::new();
     io::stdin().read_line(&mut domain)?;
     domain = domain.trim().to_string();
 
     // Prompt the user for the output file name
     print!("Please enter the file name to write the crawled results: ");
-    io::stdout().flush()?; 
+    io::stdout().flush()?;
     let mut output_file = String::new();
     io::stdin().read_line(&mut output_file)?;
     output_file = output_file.trim().to_string();
@@ -64,17 +64,14 @@ async fn main() -> std::io::Result<()> {
 
                 while num_pages_crawled.load(std::sync::atomic::Ordering::Relaxed) < MAX_PAGES_PER_DOMAIN {
                     let mut domain_to_crawl = None;
-                    let mut depth = 0;
 
                     {
                         let mut urls_to_crawl = urls_to_crawl.lock().unwrap();
                         for (domain, urls) in urls_to_crawl.iter_mut() {
                             while let Some((url, current_depth)) = urls.pop_front() {
-                                depth = current_depth;
-
                                 if crawled_urls.lock().unwrap().insert(url.clone()) {
-                                    if depth <= MAX_DEPTH && !should_exclude_domain(&url) {
-                                        domain_to_crawl = Some((domain.clone(), url.clone(), depth));
+                                    if current_depth < MAX_DEPTH && !should_exclude_domain(&url) {
+                                        domain_to_crawl = Some((domain.clone(), url.clone(), current_depth));
                                     }
                                     break;
                                 }
@@ -98,13 +95,14 @@ async fn main() -> std::io::Result<()> {
                                     let selector = Selector::parse("a").unwrap();
 
                                     for element in fragment.select(&selector) {
-                                        let new_url = element.value().attr("href").unwrap_or("");
-                                        if (depth + 1) <= MAX_DEPTH && !should_exclude_domain(new_url) && (new_url.starts_with("http") || new_url.starts_with("https")) {
-                                            new_urls.push(new_url.to_string());
+                                        if let Some(new_url) = element.value().attr("href") {
+                                            if (depth + 1) <= MAX_DEPTH && !should_exclude_domain(new_url) && (new_url.starts_with("http") || new_url.starts_with("https")) {
+                                                new_urls.push(new_url.to_string());
+                                            }
                                         }
                                     }
                                 }
-                                
+
                                 for new_url in new_urls {
                                     urls_to_crawl.lock().unwrap().entry(domain.clone()).or_default().push_back((new_url, depth + 1));
                                 }
@@ -117,7 +115,7 @@ async fn main() -> std::io::Result<()> {
                                     .append(true)
                                     .open(&output_file)
                                     .await.unwrap();
-                                
+
                                 file.write_all(format!("{}\n", &url).as_bytes()).await.unwrap();
 
                                 num_pages_crawled.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
