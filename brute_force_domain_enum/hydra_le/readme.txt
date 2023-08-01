@@ -28,3 +28,36 @@ To fix the problems, we will update the loop to check for excluded domains corre
 In the updated code, we define a separate function should_exclude_domain to check if a given URL should be excluded based on the EXCLUDED_DOMAINS array. The should_exclude_domain function checks if the URL contains any of the domains specified in EXCLUDED_DOMAINS and returns true if it matches any excluded domain, otherwise false.
 
 The crawler will now properly exclude URLs containing the specified domains and avoid crawling the same URLs multiple times.
+
+
+The depth of crawling of a given URL is controlled by the following portion of the code:
+
+while num_pages_crawled.load(std::sync::atomic::Ordering::Relaxed) < MAX_PAGES_PER_DOMAIN {
+    // ... (other code)
+
+    if let Some((domain, url)) = domain_to_crawl {
+        let response = client.get(&url).send().await;
+
+        match response {
+            Ok(res) => {
+                // ... (other code)
+
+                // Check the current depth and limit the crawling to a certain level.
+                if num_pages_crawled.load(std::sync::atomic::Ordering::Relaxed) >= MAX_PAGES_PER_DOMAIN {
+                    break;
+                }
+            }
+            // ... (other code)
+        }
+    }
+}
+
+Explanation:
+
+The while loop runs as long as the total number of pages crawled (num_pages_crawled) is less than the maximum allowed number of pages per domain (MAX_PAGES_PER_DOMAIN).
+
+Within the loop, when a URL is selected for crawling (inside the if let Some((domain, url)) = domain_to_crawl { ... } block), it sends an HTTP request to fetch the content of the URL using the reqwest crate. The response is then processed.
+
+After a successful response (Ok(res) => { ... }), the code checks if the number of pages crawled has reached or exceeded the maximum allowed number of pages per domain (MAX_PAGES_PER_DOMAIN). If it has reached this limit, the loop will break, and the crawling process will stop.
+
+This control mechanism ensures that the crawler stops crawling new pages once it has reached the specified depth, defined by MAX_PAGES_PER_DOMAIN. The num_pages_crawled atomic counter keeps track of the number of pages crawled, and when it exceeds the defined limit, the loop exits, preventing the crawler from crawling more pages than intended.
