@@ -1,0 +1,9 @@
+[package]
+name = "lazy_domain_crawler"
+version = "0.1.0"
+edition = "2018"
+
+[dependencies]
+scraper = "0.12"
+tokio = { version = "1", features = ["full"] }
+reqwest = "0.11"
