@@ -93,3 +93,30 @@ Please note that modifying the registry can be risky and may cause system instab
 Consider Windows 10 Pro: If you find that you consistently need more threads than what Windows 10 Home allows, consider upgrading to Windows 10 Pro. The Pro edition has additional features and configurations for performance tuning, including thread limits.
 
 Again, it's important to emphasize that manually tweaking the thread limit in the registry should be done with caution. Before making any changes, thoroughly understand the implications and potential risks, and always create a backup of your system or registry settings. If your application requires a significantly higher number of threads, it may be worth reevaluating the design and considering other concurrent programming paradigms that are more efficient and scalable.
+
+Here is the registry value: SharedSection=1024,20480,768 
+
+How should I modify it?
+ChatGPT
+The registry value "SharedSection=1024,20480,768" represents the shared section configuration used by Windows for managing user interface (UI) resources and desktop heap. The numbers represent the size of three different memory pools (in kilobytes) for desktop heap segments.
+
+The format of the SharedSection value is as follows:
+
+makefile
+Copy code
+SharedSection=SharedHeapSize,SharedHeapSizeMax,SharedHeapSizeMax2
+To increase the number of threads, you can add more memory to the desktop heap segments. A larger heap size will allow more resources to be allocated, potentially accommodating more threads.
+
+Here's an example of how you can modify the value to increase the shared heap size:
+
+makefile
+Copy code
+SharedSection=1024,4096,20480
+Explanation of the new values:
+
+SharedHeapSize: 1024 KB (1 MB) - Initial size of the desktop heap segment.
+SharedHeapSizeMax: 4096 KB (4 MB) - Maximum size of the desktop heap segment.
+SharedHeapSizeMax2: 20480 KB (20 MB) - Maximum size of the desktop heap segment for session 2 (non-interactive).
+After making the change, it's essential to restart your computer for the modifications to take effect.
+
+Please keep in mind that modifying the registry can be risky, and incorrect changes may cause system instability. Make sure to create a backup of the registry before proceeding with any modifications. If you encounter any issues after modifying the registry, revert to the previous settings or restore from the backup. Additionally, consider the potential impact on other applications and system components that use the desktop heap segments.
