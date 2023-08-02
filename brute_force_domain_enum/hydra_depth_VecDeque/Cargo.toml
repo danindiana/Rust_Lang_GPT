@@ -1,0 +1,14 @@
+[package]
+name = "lazy_domain_crawler"
+version = "0.1.0"
+edition = "2018"
+
+#https://www.exascaleproject.org/
+
+[dependencies]
+reqwest = { version = "0.11", features = ["json"] }
+select = "0.4.3"
+url = "2.2.2"
+futures = "0.3.17"
+rustc-hash = "1.1.0"
+tokio = { version = "1", features = ["full"] }
