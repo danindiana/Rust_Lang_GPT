@@ -2543,3 +2543,513 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 This implementation switches between two files, "queue_read.txt" and "queue_write.txt". After processing all the URLs in "queue_read.txt", it renames "queue_write.txt" to "queue_read.txt" and continues until there are no more URLs to process.
 
 Note that this implementation does not guarantee the order of processing for URLs of the same depth. If you require the URLs to be processed in breadth-first order, you might need to reintroduce the VecDeque in conjunction with file-based persistence, taking care to flush it to disk periodically rather than letting it grow too large in memory.
+
+That code returns this error: 
+
+Error: Os { code: 5, kind: PermissionDenied, message: "Access is denied." }
+error: process didn't exit successfully: `target\debug\lazy_domain_crawler.exe` (exit code: 1)
+
+The "Access is denied" error is likely related to file handling, particularly when trying to both read and write to the same file. Let's revise the approach to handle the queue file by closing and reopening it as needed, which should alleviate the permission issue. We'll use separate blocks to read and write to the file to avoid conflicts.
+
+Here's the updated code:
+
+```rust
+use reqwest::Client;
+use select::document::Document;
+use select::predicate::Name;
+use std::collections::{HashSet, VecDeque};
+use std::fs::{File, OpenOptions};
+use std::io::{BufWriter, Write, Read, BufReader, BufRead};
+use tokio::sync::Semaphore;
+use url::Url;
+
+async fn fetch_links(
+    client: &Client,
+    url: &str,
+) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    let response = client.get(url).send().await?;
+    let body = response.text().await?;
+    let document = Document::from_read(body.as_bytes())?;
+
+    let base_url = Url::parse(url)?;
+    let links: Vec<String> = document
+        .find(Name("a"))
+        .filter_map(|node| node.attr("href"))
+        .filter_map(|link| base_url.join(link).ok())
+        .filter(|url| url.host_str() == base_url.host_str())
+        .map(Into::into)
+        .collect();
+
+    Ok(links)
+}
+
+const QUEUE_FLUSH_SIZE: usize = 1000;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let client = Client::new();
+    let semaphore = Semaphore::new(10);
+
+    let mut domain = String::new();
+    println!("Enter the domain to crawl:");
+    std::io::stdin().read_line(&mut domain)?;
+    domain = domain.trim().to_string();
+
+    let mut file_name = String::new();
+    println!("Enter the output file name:");
+    std::io::stdin().read_line(&mut file_name)?;
+    let file = File::create(file_name.trim())?;
+    let mut writer = BufWriter::new(file);
+
+    let mut depth_input = String::new();
+    println!("Enter the maximum depth to crawl:");
+    std::io::stdin().read_line(&mut depth_input)?;
+    let max_depth: usize = depth_input.trim().parse()?;
+
+    let mut queue: VecDeque<(String, usize)> = VecDeque::new();
+    let mut crawled_urls = HashSet::new();
+
+    queue.push_back((domain, 0));
+
+    let queue_backup_path = "queue_backup.txt";
+    std::fs::write(queue_backup_path, "")?; // Initialize empty file
+
+    while let Some((url, depth)) = queue.pop_front() {
+        if queue.len() < QUEUE_FLUSH_SIZE {
+            // Read backup queue from file
+            let mut file_read = File::open(queue_backup_path)?;
+            let reader = BufReader::new(file_read);
+            for line in reader.lines() {
+                let line = line?;
+                let parts: Vec<&str> = line.split('\t').collect();
+                queue.push_back((parts[0].to_string(), parts[1].parse()?));
+            }
+        }
+
+        if depth > max_depth || crawled_urls.contains(&url) {
+            continue;
+        }
+
+        let permit = semaphore.acquire().await.expect("acquire permit");
+        println!("Crawling: {}", url);
+        crawled_urls.insert(url.clone());
+        writeln!(writer, "{}", url)?;
+
+        if let Ok(links) = fetch_links(&client, &url).await {
+            for link in links {
+                if !crawled_urls.contains(&link) {
+                    if queue.len() >= QUEUE_FLUSH_SIZE {
+                        // Write to backup queue file
+                        let mut queue_file = OpenOptions::new().append(true).open(queue_backup_path)?;
+                        writeln!(queue_file, "{}\t{}", link, depth + 1)?;
+                    } else {
+                        queue.push_back((link, depth + 1));
+                    }
+                }
+            }
+        }
+
+        drop(permit);
+    }
+
+    println!("Crawling complete!");
+    std::fs::remove_file(queue_backup_path)?; // Cleanup
+
+    Ok(())
+}
+```
+
+The changes to the code include:
+
+1. Initializing the backup queue file with an empty string to ensure it exists before reading.
+2. Separating the reading and writing of the backup queue file into different blocks to avoid conflicting access.
+3. Using a `BufReader` to read lines from the file, and reopening the file in append mode when writing to it.
+
+Please try running this updated code and see if it resolves the issue.
+
+I ran that file and it worked well however I changed the const QUEUE_FLUSH_SIZE: usize = 1000; value to 8000. Do you think that is what caused the following error? I should set it back down to a more conservative figure?
+
+thread 'main' has overflowed its stack
+error: process didn't exit successfully: `target\debug\lazy_domain_crawler.exe` (exit code: 0xc00000fd, STATUS_STACK_OVERFLOW)
+
+Yes, increasing the `QUEUE_FLUSH_SIZE` to 8000 likely caused the stack overflow error.
+
+The variable `QUEUE_FLUSH_SIZE` determines the number of URLs that are kept in memory before flushing them to a file. When you set this to a larger value like 8000, it means the program will keep more URLs in memory, which can increase the stack size, especially if the URLs themselves are long.
+
+Examine this website on Rust threads: https://doc.rust-lang.org/std/thread/#stack-size and using that information attempt to refactor the code so that we can manually specify the stack size for spawned threads and increase those values from the default.
+
+use tokio::runtime::Builder;
+
+let runtime = Builder::new_multi_thread()
+    .worker_threads(4) // Number of worker threads
+    .thread_stack_size(3 * 1024 * 1024) // Stack size for each worker thread (3 MB in this case)
+    .enable_all()
+    .build()?;
+runtime.block_on(async {
+    // Your code here
+});
+
+
+In Rust, stack size is limited, and if you try to allocate more memory on the stack than is available, you will get a stack overflow error. 
+
+Reducing `QUEUE_FLUSH_SIZE` back to 1000, or even less, should help alleviate the problem. You should choose a value based on the available memory and stack size of your system. If you're unsure, it's safer to go with a more conservative value. The trade-off is that a smaller value will mean more frequent file I/O, but in most cases, this won't significantly impact performance compared to the risk of a stack overflow.
+
+Examine this website on Rust threads: https://doc.rust-lang.org/std/thread/#stack-size and using that information attempt to refactor the code so that we can manually specify the stack size for spawned threads and increase those values from the default.
+
+Certainly! From the provided Rust documentation, it appears that you can set the stack size for a thread using the `Builder` struct. However, since we're using Tokio as our async runtime, the threads managed by Tokio are the ones that run our async tasks.
+
+To change the stack size for the threads managed by Tokio, we can use a custom thread builder when creating the runtime. Here's an example of how you might do this:
+
+```rust
+use tokio::runtime::Builder;
+
+let runtime = Builder::new_multi_thread()
+    .worker_threads(4) // Number of worker threads
+    .thread_stack_size(3 * 1024 * 1024) // Stack size for each worker thread (3 MB in this case)
+    .enable_all()
+    .build()?;
+runtime.block_on(async {
+    // Your code here
+});
+```
+
+Here's the updated code integrating this change:
+
+```rust
+use reqwest::Client;
+use select::document::Document;
+use select::predicate::Name;
+use std::collections::{HashSet, VecDeque};
+use std::fs::File;
+use std::io::{BufWriter, Write, Read};
+use tokio::sync::Semaphore;
+use url::Url;
+use tokio::runtime::Builder;
+
+async fn fetch_links(
+    client: &Client,
+    url: &str,
+) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    let response = client.get(url).send().await?;
+    let body = response.text().await?;
+    let document = Document::from_read(body.as_bytes())?;
+
+    let base_url = Url::parse(url)?;
+    let links: Vec<String> = document
+        .find(Name("a"))
+        .filter_map(|node| node.attr("href"))
+        .filter_map(|link| base_url.join(link).ok())
+        .filter(|url| url.host_str() == base_url.host_str())
+        .map(Into::into)
+        .collect();
+
+    Ok(links)
+}
+
+const QUEUE_FLUSH_SIZE: usize = 1000;
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let runtime = Builder::new_multi_thread()
+        .worker_threads(4)
+        .thread_stack_size(3 * 1024 * 1024) // 3 MB stack size
+        .enable_all()
+        .build()?;
+    runtime.block_on(async_main())
+}
+
+async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
+    // The rest of your code goes here (same as previous)
+}
+
+// Don't forget to update the function signatures and the rest of the code accordingly
+```
+
+You'll want to update the number of worker threads and the stack size based on your specific needs and system capabilities. Make sure to balance these parameters as setting them too high can lead to excessive resource consumption, while setting them too low might not solve the stack overflow problem.
+
+Certainly! Below is the refactored code that takes advantage of Tokio's custom thread builder to configure the worker threads and stack size. We'll replace the #[tokio::main] macro with a custom runtime builder to achieve this.
+
+rust
+Copy code
+use reqwest::Client;
+use select::document::Document;
+use select::predicate::Name;
+use std::collections::{HashSet, VecDeque};
+use std::fs::{File, OpenOptions};
+use std::io::{BufWriter, Write, Read, BufReader, BufRead};
+use tokio::sync::Semaphore;
+use url::Url;
+use tokio::runtime::Builder;
+
+async fn fetch_links(
+    client: &Client,
+    url: &str,
+) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    let response = client.get(url).send().await?;
+    let body = response.text().await?;
+    let document = Document::from_read(body.as_bytes())?;
+
+    let base_url = Url::parse(url)?;
+    let links: Vec<String> = document
+        .find(Name("a"))
+        .filter_map(|node| node.attr("href"))
+        .filter_map(|link| base_url.join(link).ok())
+        .filter(|url| url.host_str() == base_url.host_str())
+        .map(Into::into)
+        .collect();
+
+    Ok(links)
+}
+
+const QUEUE_FLUSH_SIZE: usize = 2000;
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let worker_threads = 4; // You can adjust this value
+    let stack_size = 3 * 1024 * 1024; // 3 MB, you can adjust this value
+
+    let runtime = Builder::new_multi_thread()
+        .worker_threads(worker_threads)
+        .thread_stack_size(stack_size)
+        .enable_all()
+        .build()?;
+    runtime.block_on(async_main())
+}
+
+async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
+    // The rest of your main code goes here
+    // ...
+}
+Note: Make sure you adjust the worker_threads and stack_size values based on your specific needs and system capabilities. By manually specifying these values, you have control over the number of threads used by the runtime and the stack size of each thread, allowing you to fine-tune the behavior of your application.
+
+
+
+
+User
+Examine this website on Rust threads: https://doc.rust-lang.org/std/thread/#stack-size
+
+Refactor the following code by to change the stack size for the threads managed by Tokio, we can use a custom thread builder when creating the runtime. Make sure we can update the number of worker threads and the stack size based on our specific needs and system capabilities. Produce the refactored code in it's entirety which means no partial code snippets but the completely refactored code.
+
+
+reqwest::Client;
+use select::document::Document;
+use select::predicate::Name;
+use std::collections::{HashSet, VecDeque};
+use std::fs::{File, OpenOptions};
+use std::io::{BufWriter, Write, Read, BufReader, BufRead};
+use tokio::sync::Semaphore;
+use url::Url;
+
+async fn fetch_links(
+    client: &Client,
+    url: &str,
+) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    let response = client.get(url).send().await?;
+    let body = response.text().await?;
+    let document = Document::from_read(body.as_bytes())?;
+
+    let base_url = Url::parse(url)?;
+    let links: Vec<String> = document
+        .find(Name("a"))
+        .filter_map(|node| node.attr("href"))
+        .filter_map(|link| base_url.join(link).ok())
+        .filter(|url| url.host_str() == base_url.host_str())
+        .map(Into::into)
+        .collect();
+
+    Ok(links)
+}
+
+const QUEUE_FLUSH_SIZE: usize = 2000;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let client = Client::new();
+    let semaphore = Semaphore::new(10);
+
+    let mut domain = String::new();
+    println!("Enter the domain to crawl:");
+    std::io::stdin().read_line(&mut domain)?;
+    domain = domain.trim().to_string();
+
+    let mut file_name = String::new();
+    println!("Enter the output file name:");
+    std::io::stdin().read_line(&mut file_name)?;
+    let file = File::create(file_name.trim())?;
+    let mut writer = BufWriter::new(file);
+
+    let mut depth_input = String::new();
+    println!("Enter the maximum depth to crawl:");
+    std::io::stdin().read_line(&mut depth_input)?;
+    let max_depth: usize = depth_input.trim().parse()?;
+
+    let mut queue: VecDeque<(String, usize)> = VecDeque::new();
+    let mut crawled_urls = HashSet::new();
+
+    queue.push_back((domain, 0));
+
+    let queue_backup_path = "queue_backup.txt";
+    std::fs::write(queue_backup_path, "")?; // Initialize empty file
+
+    while let Some((url, depth)) = queue.pop_front() {
+        if queue.len() < QUEUE_FLUSH_SIZE {
+            // Read backup queue from file
+            let mut file_read = File::open(queue_backup_path)?;
+            let reader = BufReader::new(file_read);
+            for line in reader.lines() {
+                let line = line?;
+                let parts: Vec<&str> = line.split('\t').collect();
+                queue.push_back((parts[0].to_string(), parts[1].parse()?));
+            }
+        }
+
+        if depth > max_depth || crawled_urls.contains(&url) {
+            continue;
+        }
+
+        let permit = semaphore.acquire().await.expect("acquire permit");
+        println!("Crawling: {}", url);
+        crawled_urls.insert(url.clone());
+        writeln!(writer, "{}", url)?;
+
+        if let Ok(links) = fetch_links(&client, &url).await {
+            for link in links {
+                if !crawled_urls.contains(&link) {
+                    if queue.len() >= QUEUE_FLUSH_SIZE {
+                        // Write to backup queue file
+                        let mut queue_file = OpenOptions::new().append(true).open(queue_backup_path)?;
+                        writeln!(queue_file, "{}\t{}", link, depth + 1)?;
+                    } else {
+                        queue.push_back((link, depth + 1));
+                    }
+                }
+            }
+        }
+
+        drop(permit);
+    }
+
+    println!("Crawling complete!");
+    std::fs::remove_file(queue_backup_path)?; // Cleanup
+
+    Ok(())
+}
+ChatGPT
+Certainly! Here's the complete refactored code that includes a custom thread builder for Tokio to adjust the stack size and the number of worker threads. I've removed the #[tokio::main] macro and replaced it with a custom runtime builder:
+
+rust
+Copy code
+use reqwest::Client;
+use select::document::Document;
+use select::predicate::Name;
+use std::collections::{HashSet, VecDeque};
+use std::fs::{File, OpenOptions};
+use std::io::{BufWriter, Write, Read, BufReader, BufRead};
+use tokio::sync::Semaphore;
+use url::Url;
+use tokio::runtime::Builder;
+
+async fn fetch_links(
+    client: &Client,
+    url: &str,
+) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    let response = client.get(url).send().await?;
+    let body = response.text().await?;
+    let document = Document::from_read(body.as_bytes())?;
+
+    let base_url = Url::parse(url)?;
+    let links: Vec<String> = document
+        .find(Name("a"))
+        .filter_map(|node| node.attr("href"))
+        .filter_map(|link| base_url.join(link).ok())
+        .filter(|url| url.host_str() == base_url.host_str())
+        .map(Into::into)
+        .collect();
+
+    Ok(links)
+}
+
+const QUEUE_FLUSH_SIZE: usize = 2000;
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let worker_threads = 4; // You can adjust this value
+    let stack_size = 3 * 1024 * 1024; // 3 MB, you can adjust this value
+
+    let runtime = Builder::new_multi_thread()
+        .worker_threads(worker_threads)
+        .thread_stack_size(stack_size)
+        .enable_all()
+        .build()?;
+    runtime.block_on(async_main())
+}
+
+async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
+    let client = Client::new();
+    let semaphore = Semaphore::new(10);
+
+    let mut domain = String::new();
+    println!("Enter the domain to crawl:");
+    std::io::stdin().read_line(&mut domain)?;
+    domain = domain.trim().to_string();
+
+    let mut file_name = String::new();
+    println!("Enter the output file name:");
+    std::io::stdin().read_line(&mut file_name)?;
+    let file = File::create(file_name.trim())?;
+    let mut writer = BufWriter::new(file);
+
+    let mut depth_input = String::new();
+    println!("Enter the maximum depth to crawl:");
+    std::io::stdin().read_line(&mut depth_input)?;
+    let max_depth: usize = depth_input.trim().parse()?;
+
+    let mut queue: VecDeque<(String, usize)> = VecDeque::new();
+    let mut crawled_urls = HashSet::new();
+
+    queue.push_back((domain, 0));
+
+    let queue_backup_path = "queue_backup.txt";
+    std::fs::write(queue_backup_path, "")?; // Initialize empty file
+
+    while let Some((url, depth)) = queue.pop_front() {
+        if queue.len() < QUEUE_FLUSH_SIZE {
+            // Read backup queue from file
+            let mut file_read = File::open(queue_backup_path)?;
+            let reader = BufReader::new(file_read);
+            for line in reader.lines() {
+                let line = line?;
+                let parts: Vec<&str> = line.split('\t').collect();
+                queue.push_back((parts[0].to_string(), parts[1].parse()?));
+            }
+        }
+
+        if depth > max_depth || crawled_urls.contains(&url) {
+            continue;
+        }
+
+        let permit = semaphore.acquire().await.expect("acquire permit");
+        println!("Crawling: {}", url);
+        crawled_urls.insert(url.clone());
+        writeln!(writer, "{}", url)?;
+
+        if let Ok(links) = fetch_links(&client, &url).await {
+            for link in links {
+                if !crawled_urls.contains(&link) {
+                    if queue.len() >= QUEUE_FLUSH_SIZE {
+                        // Write to backup queue file
+                        let mut queue_file = OpenOptions::new().append(true).open(queue_backup_path)?;
+                        writeln!(queue_file, "{}\t{}", link, depth + 1)?;
+                    } else {
+                        queue.push_back((link, depth + 1));
+                    }
+                }
+            }
+        }
+
+        drop(permit);
+    }
+
+    println!("Crawling complete!");
+    std::fs::remove_file(queue_backup_path)?; // Cleanup
+
+    Ok(())
+}
+Here, I've introduced a new async_main function to contain the original code inside the main function and used the custom Tokio runtime to run it. By setting worker_threads and thread_stack_size, you can customize the number of worker threads and the stack size based on your specific needs and system capabilities.
