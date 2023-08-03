@@ -1,0 +1,12 @@
+[package]
+name = "lazy_domain_crawler"
+version = "0.1.0"
+edition = "2018"
+
+#https://www.exascaleproject.org/
+
+[dependencies]
+reqwest = { version = "0.11", features = ["tokio-native-tls"] }
+select = "0.4.3"
+tokio = { version = "1", features = ["full"] }
+url = "2.2.2"
