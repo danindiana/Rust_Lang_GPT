@@ -1,0 +1,25 @@
+The code you have provided implements a web crawler in Rust, which is used to crawl a given domain recursively up to a specified depth, storing the crawled URLs.
+
+The "stack overflow" error you're experiencing, particularly at deeper levels, is likely due to a combination of factors related to recursion, concurrency, and the overall design of the crawling process. Let's break down the potential issues:
+
+1. **Recursion Depth**: The code utilizes a breadth-first approach with a queue, managing URLs to crawl at different depths. However, if the depth is large and there are many links at each level, the memory consumption can grow quickly, especially if the links lead to further links in a dense graph.
+
+2. **Concurrency Control**: The use of a `Semaphore` with a value of 7 controls concurrency by limiting the number of simultaneous fetches. While this helps prevent overwhelming the system with too many parallel tasks, the way URLs are queued and handled could still contribute to the issue.
+
+3. **Queue Management and File I/O**: The code incorporates a logic to handle the queue of URLs, backing up to a file if it reaches a certain size (`QUEUE_FLUSH_SIZE`). This can create complexity and could contribute to the problem, especially if there's a lot of thrashing between memory and disk.
+
+4. **Thread Stack Size**: You have set the thread stack size to `120 * 1024 * 1024` (120 MB). This should typically be sufficient, but depending on the specific workload and the data structures used, it might still be a limiting factor.
+
+5. **Handling of Depth**: The way the depth is controlled in this code might not be limiting the recursion effectively. Each link found is pushed back into the queue with a depth incremented by one. If links are continuously found at each level, this can quickly grow to a substantial size, both in terms of the queue itself and the recursion depth.
+
+6. **URL Re-Queueing**: The logic for reading backup queue from file within the main loop might be causing some URLs to be re-queued, leading to unnecessary repetitions and potentially contributing to the stack overflow. The condition `if queue.len() < QUEUE_FLUSH_SIZE` may need to be reviewed to ensure that it doesn't lead to a feedback loop of re-adding URLs.
+
+7. **Memory Consumption**: Rust's ownership model is very strict, and some temporary allocations might not be freed as soon as they are no longer needed, contributing to high memory consumption.
+
+### Solutions:
+
+- **Optimize Depth Handling**: Consider a more aggressive strategy to limit the depth of recursion, potentially pruning branches of the search that seem less promising or limiting the number of links processed at each level.
+- **Improve Queue Management**: You could try optimizing the queue management and handling the backup more efficiently to minimize thrashing between memory and disk.
+- **Profile the Code**: Tools like `valgrind` or Rust's native memory tools can help identify where the most memory is being consumed, leading to targeted optimizations.
+
+By addressing these issues, you might alleviate or completely resolve the stack overflow error. It can be a complex task, as it might require a deep understanding of both the code and the specific domains being crawled.
