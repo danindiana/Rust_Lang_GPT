@@ -1,0 +1,75 @@
+This program is a file duplicate finder that searches for duplicate files in multiple drives (C:, D:, E:, etc.) and writes the results to an output file. It utilizes multi-threading to speed up the search process using the `rayon` library.
+
+Let's go through the program step by step:
+
+1. Import necessary libraries and modules:
+   The program starts by importing various standard libraries and external dependencies such as `std::collections::HashMap`, `std::fs::File`, `std::io`, `std::path::Path`, `std::sync`, `glob`, `rayon`, and `sha2`.
+
+2. Prompt for the output file name:
+   The program prompts the user to enter the name of the output file where the search results will be written.
+
+3. Read and process the output file name:
+   The program reads the user's input for the output file name and trims any leading or trailing whitespace. If the user doesn't provide any name (empty input), the program informs the user and exits gracefully.
+
+4. Create data structures for thread-safe writing and storage:
+   The program creates two data structures using `Arc` (atomic reference-counted) and `Mutex` (mutual exclusion) to facilitate multi-threading while writing results to the output file and storing file hashes.
+
+5. Define a list of drives to search:
+   The program creates a vector `drives` containing the names of drives to search. You can see that the drives include "C:", "D:", "E:", and so on.
+
+6. Perform parallel search on each drive:
+   The program uses `rayon::prelude::*` to parallelize the search process. It iterates over the `drives` vector and, for each drive, calls the `search_in_directory` function.
+
+7. Search for duplicate files in a directory:
+   The `search_in_directory` function is responsible for searching for duplicate files within a given directory.
+
+8. Print the search status and results:
+   After completing the search, the program prints a message indicating that the search is completed, and the results are written to the specified output file.
+
+Now, let's take a closer look at the `search_in_directory` function:
+
+1. Print the current directory being searched:
+   The function first prints the directory it's currently searching, which provides some visibility into the search process.
+
+2. Check if the directory exists:
+   The function checks if the given directory exists and is accessible. If not, it prints an error message and returns immediately.
+
+3. Generate the search pattern:
+   The function creates a search pattern using the provided directory name. It uses the `glob` function to search for all files (including those in subdirectories) in the specified directory.
+
+4. Iterate over the entries in the search pattern:
+   The function iterates over the entries returned by the `glob` function. Each entry represents a file or directory in the search pattern.
+
+5. Process each file entry:
+   For each entry that represents a file (not a directory), the function generates a SHA256 hash of the file using the `generate_file_hash` function.
+
+6. Check for duplicate files:
+   The function acquires a lock on the `hashes` data structure (a `Mutex<HashMap>`), which stores the file hashes and their corresponding paths. It checks if the generated hash already exists in the `hashes` map.
+
+7. Handle duplicate files:
+   If the hash already exists in the map, it means there's a duplicate file. The function acquires a lock on the `writer` data structure (a `Mutex<BufWriter<File>>`), which writes to the output file. It writes information about the duplicate files (paths) and the current file being processed.
+
+8. Store unique files:
+   If the hash is not present in the map, it means the file is unique. The function adds the hash and the file path to the `hashes` map.
+
+9. Handle errors and return:
+   The function handles any errors that may occur during the file operations and returns an `io::Result` indicating success or failure.
+
+Lastly, let's look at the `generate_file_hash` function:
+
+1. Open the file:
+   The function attempts to open the file specified by the `path`.
+
+2. Initialize SHA256:
+   It creates a SHA256 hasher to calculate the hash of the file.
+
+3. Read the file in chunks and update the hasher:
+   The function reads the file in chunks of 1024 bytes and updates the SHA256 hasher with the contents of each chunk until the end of the file is reached.
+
+4. Finalize and format the hash:
+   Once the entire file is processed, the function finalizes the SHA256 hash and formats it as a hexadecimal string.
+
+5. Return the hash:
+   The function returns the calculated hash as a string.
+
+That's the detailed explanation of the given program. It searches for duplicate files in multiple drives using parallel processing and writes the results to the specified output file.
