@@ -1,0 +1,49 @@
+trouble shoot this rust error output:
+
+ --- stderr
+  thread 'main' panicked at '
+
+  Could not find directory of OpenSSL installation, and this `-sys` crate cannot
+  proceed without this knowledge. If OpenSSL is installed and this crate had
+  trouble finding it,  you can set the `OPENSSL_DIR` environment variable for the
+  compilation process.
+
+  Make sure you also have the development packages of openssl installed.
+  For example, `libssl-dev` on Ubuntu or `openssl-devel` on Fedora.
+
+  If you're in a situation where you think the directory *should* be found
+  automatically, please open a bug at https://github.com/sfackler/rust-openssl
+  and include information about your system as well as this message.
+
+  $HOST = x86_64-unknown-linux-gnu
+  $TARGET = x86_64-unknown-linux-gnu
+  openssl-sys = 0.9.92
+ChatGPT
+The error message indicates that the Rust program is having trouble finding the OpenSSL installation on your system. To troubleshoot this issue, you can follow these steps:
+
+Install OpenSSL Development Packages:
+Make sure you have the OpenSSL development packages installed on your system. The error message suggests using libssl-dev on Ubuntu or openssl-devel on Fedora. Depending on your distribution, you might need to use a different package name. Install the appropriate package for your system.
+
+Set OPENSSL_DIR Environment Variable:
+The error message suggests setting the OPENSSL_DIR environment variable to help the program locate the OpenSSL installation. You can set this variable to the directory where OpenSSL is installed on your system. Open a terminal and run the following command, replacing /path/to/openssl with the actual path to your OpenSSL installation:
+
+bash
+Copy code
+export OPENSSL_DIR=/path/to/openssl
+Alternatively, you can set this environment variable directly in your Rust project's build script or Cargo.toml file.
+
+Check OpenSSL Installation:
+Ensure that OpenSSL is correctly installed on your system. You can do this by running the following command in your terminal:
+
+bash
+Copy code
+openssl version
+This should display the OpenSSL version installed on your system. If the command is not recognized or doesn't return a version, it indicates that OpenSSL might not be properly installed.
+
+Update openssl-sys Crate:
+The version of the openssl-sys crate mentioned in the error message is 0.9.92. Check if there is a newer version of the crate available. You can update the crate's version in your Cargo.toml file and try again.
+
+Check System Information:
+If none of the above steps work, as a last resort, consider opening a bug report on the GitHub repository mentioned in the error message. Provide information about your system, including your operating system, version, and any relevant details that might help the maintainers understand the issue better.
+
+Remember that the exact steps might vary depending on your system and setup. If you're still having trouble, consider seeking help on Rust-related forums or communities where others might have encountered similar issues.
