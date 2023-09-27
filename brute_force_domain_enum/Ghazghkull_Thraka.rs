@@ -1,25 +1,30 @@
 use reqwest::header::{HeaderMap, HeaderValue, USER_AGENT};
 use reqwest::Client;
 use scraper::{Html, Selector};
-use url::Url;
 use std::collections::HashSet;
+use std::fs::File;
 use std::io::{self, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::signal::ctrl_c;
+use url::Url;
 
 const MAX_HOSTNAMES_PER_DOMAIN: usize = 110;
 const MAX_LINKS_PER_HOSTNAME: usize = 50;
-const USER_AGENT_STRING: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/99.0.9999.99 Safari/537.36";
+const USER_AGENT_STRING: &str =
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/99.0.9999.99 Safari/537.36";
 
 #[tokio::main]
 async fn main() {
     println!("Welcome to the dcrawl program!");
     println!("You can stop the process anytime by pressing Ctrl-X.");
-    println!("Please enter the URL to begin the crawl process: ");
+    println!("Please enter the URL to begin the crawl process:");
     let starting_url = prompt_user_input();
     let mut url_queue = vec![starting_url.clone()];
     let mut crawled_urls = HashSet::new();
+
+    println!("Enter the file name to save crawl output:");
+    let output_file_name = prompt_user_input();
 
     let running = Arc::new(AtomicBool::new(true));
     let r = running.clone();
@@ -27,6 +32,8 @@ async fn main() {
         ctrl_c().await.expect("failed to listen for Ctrl+C");
         r.store(false, Ordering::SeqCst);
     });
+
+    let mut output_file = File::create(output_file_name.trim()).expect("Failed to create output file");
 
     println!("Starting dcrawl...");
 
@@ -40,6 +47,7 @@ async fn main() {
         }
 
         println!("Crawling: {}", url);
+        writeln!(output_file, "Crawling: {}", url).expect("Failed to write to output file");
         crawled_urls.insert(url.clone());
 
         if let Some(hostname) = get_hostname(&url) {
@@ -47,6 +55,7 @@ async fn main() {
                 Ok(links) => links,
                 Err(err) => {
                     println!("Failed to crawl {}: {}", url, err);
+                    writeln!(output_file, "Failed to crawl {}: {}", url, err).expect("Failed to write to output file");
                     continue;
                 }
             };
@@ -80,13 +89,13 @@ async fn main() {
 
     println!("dcrawl process completed. You stopped the process.");
     println!("Crawled websites:");
-    for url in crawled_urls {
+    for url in &crawled_urls {
         println!("{}", url);
+        writeln!(output_file, "{}", url).expect("Failed to write to output file");
     }
 }
 
 // The rest of the code remains the same.
-
 
 fn get_hostname(url: &str) -> Option<String> {
     match Url::parse(url) {
@@ -113,7 +122,8 @@ async fn get_links(url: &str) -> Result<Vec<String>, reqwest::Error> {
         .build()?;
 
     let response = client.get(url).send().await?;
-    let content_type = response.headers()
+    let content_type = response
+        .headers()
         .get(reqwest::header::CONTENT_TYPE)
         .and_then(|ct| ct.to_str().ok());
 
@@ -142,7 +152,7 @@ async fn get_links(url: &str) -> Result<Vec<String>, reqwest::Error> {
 
 fn prompt_user_input() -> String {
     let mut input = String::new();
-    io::stdin().read_line(&mut input).unwrap();
+    io::stdin().read_line(&mut input).expect("Failed to read user input");
     input.trim().to_string()
 }
 
