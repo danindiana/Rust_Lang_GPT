@@ -1,7 +1,3 @@
-Sure! Here is a `README.md` file that explains how the Rust program functions, along with a Mermaid diagram illustrating the program's workflow.
-
-### README.md
-
 ```markdown
 # Web Crawler
 
