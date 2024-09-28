@@ -94,6 +94,9 @@ fn recursive_crawl(
                         };
 
                         if should_crawl_next {
+                            // Print crawled URL to the console
+                            println!("Crawled URL: {}", url);
+
                             // Log and crawl further recursively
                             log_to_file(log_file.clone(), format!("CRAWLING: {}", url)).ok();
                             recursive_crawl(url, cloned_crawled_urls, file.clone(), log_file.clone(), allow_external, current_depth + 1, max_depth).ok();
@@ -109,6 +112,7 @@ fn recursive_crawl(
 
     Ok(())
 }
+
 
 
 // Log function to write to the log file
