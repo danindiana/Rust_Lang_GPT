@@ -1,5 +1,12 @@
 # Rust_Lang_GPT
 
+[![Rust](https://img.shields.io/badge/rust-%23000000.svg?style=for-the-badge&logo=rust&logoColor=white)](https://www.rust-lang.org/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=for-the-badge)](https://opensource.org/licenses/MIT)
+[![GitHub repo size](https://img.shields.io/github/repo-size/danindiana/Rust_Lang_GPT?style=for-the-badge)](https://github.com/danindiana/Rust_Lang_GPT)
+[![GitHub stars](https://img.shields.io/github/stars/danindiana/Rust_Lang_GPT?style=for-the-badge)](https://github.com/danindiana/Rust_Lang_GPT/stargazers)
+[![GitHub forks](https://img.shields.io/github/forks/danindiana/Rust_Lang_GPT?style=for-the-badge)](https://github.com/danindiana/Rust_Lang_GPT/network)
+[![GitHub issues](https://img.shields.io/github/issues/danindiana/Rust_Lang_GPT?style=for-the-badge)](https://github.com/danindiana/Rust_Lang_GPT/issues)
+
 A comprehensive collection of Rust programs demonstrating various concepts, from basic file operations to advanced concurrent web crawling and data processing. These programs showcase Rust's capabilities in systems programming, async I/O, parallel processing, and network operations.
 
 ## Table of Contents
@@ -63,6 +70,8 @@ graph TD
     A --> D[Network Tools]
     A --> E[Concurrent Processing]
     A --> F[Utilities]
+    A --> G[Examples]
+    A --> H[Documentation]
 
     B --> B1[webcrawler]
     B --> B2[webcrawl_rayon]
@@ -71,14 +80,12 @@ graph TD
     B --> B5[html_downloader]
     B --> B6[hydra_mt]
 
-    C --> C1[file_search v1-v6]
+    C --> C1[file-search]
     C --> C2[file_mover]
     C --> C3[indexer]
-    C --> C4[sha2search]
 
-    D --> D1[dns_enum]
-    D --> D2[brute_force_domain_enum]
-    D --> D3[tokio_tests]
+    D --> D1[brute_force_domain_enum]
+    D --> D2[tokio_tests]
 
     E --> E1[rayon examples]
     E --> E2[rayon_word]
@@ -88,12 +95,23 @@ graph TD
     F --> F1[pdf_downloader]
     F --> F2[rustbert]
 
+    G --> G1[file_search v1-v6]
+    G --> G2[dns_enum]
+    G --> G3[sha2search]
+    G --> G4[neosearch]
+
+    H --> H1[Rust program ideas]
+    H --> H2[Protobuf ideas]
+    H --> H3[Error logs]
+
     style A fill:#FF6B6B
     style B fill:#4ECDC4
     style C fill:#45B7D1
     style D fill:#96CEB4
     style E fill:#FFEAA7
     style F fill:#DFE6E9
+    style G fill:#FFB6C1
+    style H fill:#98D8C8
 ```
 
 ### Directory Overview
@@ -101,10 +119,12 @@ graph TD
 | Category | Projects | Description |
 |----------|----------|-------------|
 | **Web Crawlers** | `webcrawler`, `webcrawl_rayon`, `webcrawl_rayon_bloom`, `web_crawler_pdf`, `html_downloader`, `hydra_mt` | Various web crawling implementations with different concurrency strategies |
-| **File Operations** | `file_search` (v1-v6), `file_mover`, `indexer`, `sha2search` | File system utilities for searching, moving, and integrity verification |
-| **Network Tools** | `dns_enum`, `brute_force_domain_enum`, `tokio_tests` | Network programming examples including DNS enumeration and TCP servers |
+| **File Operations** | `file-search`, `file_mover`, `indexer` | File system utilities for searching, moving, and indexing |
+| **Network Tools** | `brute_force_domain_enum`, `tokio_tests` | Network programming examples including DNS enumeration and TCP servers |
 | **Concurrent Processing** | `rayon`, `rayon_word`, `rayon_hasher`, `posix_pipe` | Parallel processing examples using Rayon and inter-process communication |
 | **Utilities** | `pdf_downloader`, `rustbert` | Specialized utilities for document processing and ML integration |
+| **Examples** | `file_search` (v1-v6), `dns_enum`, `sha2search`, `neosearch` | Standalone example programs demonstrating various Rust concepts |
+| **Documentation** | `docs/` | Project ideas, notes, and error logs |
 
 ## Project Categories
 
@@ -156,7 +176,7 @@ flowchart LR
     F --> G[v6: Production Ready]
 
     H[Related Tools] --> I[file_mover]
-    H --> J[sha2search]
+    H --> J[file-search]
     H --> K[indexer]
 
     style A fill:#FFF3E0
@@ -165,10 +185,11 @@ flowchart LR
 ```
 
 **Components:**
-- `file_search` (v1-v6): Evolution of file search utilities with increasing sophistication
-- `file_mover`: Utility for organizing and moving files
-- `sha2search`: SHA-256 hash verification and search
-- `indexer`: File indexing system
+- `examples/file_search*.rs` (v1-v6): Evolution of file search utilities with increasing sophistication
+- `file_mover/`: Utility for organizing and moving files
+- `file-search/`: File search project directory
+- `examples/sha2search.rs`: SHA-256 hash verification and search
+- `indexer/`: File indexing system
 
 ### Network Programming
 
@@ -193,9 +214,9 @@ sequenceDiagram
 ```
 
 **Tools:**
-- `dns_enum`: DNS enumeration utility
-- `brute_force_domain_enum`: Subdomain brute-forcing tool
-- `tokio_tests`: Async networking examples including TCP server
+- `examples/dns_enum.rs`: DNS enumeration utility
+- `brute_force_domain_enum/`: Subdomain brute-forcing tool
+- `tokio_tests/`: Async networking examples including TCP server
 
 ### Concurrent Processing
 
@@ -323,8 +344,8 @@ cargo run --release -- \
 ### Example: Running File Search
 
 ```bash
-# For standalone .rs files
-rustc file_searchv6.rs
+# For standalone .rs files in examples/
+rustc examples/file_searchv6.rs
 ./file_searchv6 /path/to/search "*.txt"
 ```
 
