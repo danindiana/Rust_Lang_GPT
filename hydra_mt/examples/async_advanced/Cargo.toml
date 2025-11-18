@@ -1,0 +1,22 @@
+[package]
+name = "async_advanced_crawler"
+version = "1.0.0"
+edition = "2021"
+authors = ["Hydra MT Contributors"]
+description = "Advanced async web crawler using Tokio"
+license = "MIT"
+
+[dependencies]
+tokio = { version = "1.42", features = ["full"] }
+reqwest = { version = "0.12", features = ["json", "gzip", "brotli", "deflate"] }
+scraper = "0.21"
+url = "2.5"
+anyhow = "1.0"
+thiserror = "2.0"
+env_logger = "0.11"
+log = "0.4"
+futures = "0.3"
+
+[[bin]]
+name = "async_crawler"
+path = "src/main.rs"
