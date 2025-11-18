@@ -1,0 +1,16 @@
+[package]
+name = "recursive_crawler"
+version = "1.0.0"
+edition = "2021"
+authors = ["Hydra MT Contributors"]
+description = "A recursive web crawler with depth control and logging"
+license = "MIT"
+
+[dependencies]
+reqwest = { version = "0.12", features = ["blocking"] }
+select = "0.6"
+rayon = "1.10"
+url = "2.5"
+anyhow = "1.0"
+env_logger = "0.11"
+log = "0.4"

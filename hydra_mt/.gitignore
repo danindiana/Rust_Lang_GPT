@@ -1,0 +1,24 @@
+# Rust build artifacts
+target/
+**/target/
+
+# Cargo lock files (keep for binaries, ignore for libraries)
+Cargo.lock
+**/Cargo.lock
+
+# IDE and editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Crawl output files
+crawled_urls_*.txt
+crawl_log_*.txt
+*.log
+
+# Temporary files
+*.tmp
+*.temp
